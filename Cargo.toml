@@ -1,0 +1,15 @@
+[package]
+authors = ["Shady <shadyfennec@gmail.com>"]
+edition = "2018"
+name = "moongbc"
+version = "0.1.0"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+crossterm = "0.17.6"
+
+[dependencies.tui]
+default-features = false
+features = ["crossterm"]
+version = "0.9.5"
