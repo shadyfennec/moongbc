@@ -20,6 +20,7 @@ enum Command {
     Goto,
 }
 
+/// The widget responsible for the disassembly output.
 pub struct Assembly {
     instruction_window: Option<InstructionWindow>,
     init: bool,
@@ -154,6 +155,7 @@ impl Widget for Assembly {
 }
 
 impl Assembly {
+    /// Returns a new Assembly widget.
     pub fn new() -> Assembly {
         Assembly {
             instruction_window: None,

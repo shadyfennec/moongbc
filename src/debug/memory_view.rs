@@ -20,6 +20,8 @@ enum Command {
     Set,
 }
 
+/// Represents the widget responsible for the memory map, able to navigate through the address
+/// space and display the content of the memory.
 pub struct MemoryView<'a> {
     text: Vec<Text<'a>>,
     start: u16,
@@ -216,6 +218,7 @@ impl<'a> Widget for MemoryView<'a> {
 }
 
 impl<'a> MemoryView<'a> {
+    /// Creates a new `MemoryView` widget.
     pub fn new() -> MemoryView<'a> {
         MemoryView {
             text: vec![],

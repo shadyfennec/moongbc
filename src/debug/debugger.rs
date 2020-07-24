@@ -27,12 +27,14 @@ enum Event<I> {
     Tick,
 }
 
+/// The terminal-based graphic debugger for the GMB emulator.
 pub struct Debugger {
     cpu: CPU,
     widgets: WidgetList,
 }
 
 impl Debugger {
+    /// Creates a new debugger from a `CPU`.
     pub fn new(cpu: CPU) -> Debugger {
         Debugger {
             cpu,
@@ -40,10 +42,13 @@ impl Debugger {
         }
     }
 
+    /// Refreshes the UI.
     pub fn refresh(&mut self) {
         self.widgets.refresh(&self.cpu);
     }
 
+    /// Runs the debugger, only stopping when an error occurs or when the user
+    /// manually quits the application.
     pub fn run(&mut self) -> Result<(), Box<dyn Error>> {
         let mut stdout = stdout();
         execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;

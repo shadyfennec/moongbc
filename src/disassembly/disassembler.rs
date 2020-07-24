@@ -4,6 +4,9 @@ use crate::register::Reg16;
 use crate::Src;
 use std::collections::VecDeque;
 
+/// A window of instructions, mainly used by the disassembler
+/// in order to access to several instructions, alongside their
+/// arguments and their address in memory.
 pub struct InstructionWindow {
     pub(crate) instructions: Vec<Line>,
     pub(crate) cursor: usize,
@@ -11,6 +14,10 @@ pub struct InstructionWindow {
 }
 
 impl InstructionWindow {
+    /// Creates an `InstructionWindow` at address `cursor`, with `before` instructions before
+    /// and `after` instructions after. If there are not enough instructions to accomodate for
+    /// the `before` and `after` instructions, it will add more instructions to either of the
+    /// ends so that the number of instructions is always `before + after`.
     pub fn build(before: usize, after: usize, cursor: u16, cpu: &CPU) -> InstructionWindow {
         let disassembler = Disassembler::new();
 
@@ -74,10 +81,13 @@ impl<T> Queue<T> {
 
 type Line = (u16, Opcode);
 
+/// A helper struct, used to disassemble instructions from the memory without actually
+/// modifying the PC register or jumping around with the emulated CPU.
 pub struct Disassembler {}
 
 impl Disassembler {
     #[allow(clippy::new_without_default)]
+    /// Creates a new `Disassembler`.
     pub fn new() -> Disassembler {
         Disassembler {}
     }
@@ -112,6 +122,8 @@ impl Disassembler {
         queue.to_vec()
     }
 
+    /// Returns whether or not the specified address is a valid
+    /// address, assuming the alignments starts at 0.
     pub fn check_address(&self, cpu: &CPU, address: u16) -> bool {
         let mut pointer = 0;
 
@@ -126,6 +138,9 @@ impl Disassembler {
         pointer == address
     }
 
+    /// Returns the size of the instruction located at the specified address,
+    /// and the one before it. If the specified address is 0, it returns instead
+    /// the size of the first and second instruction.
     pub fn surrounding_sizes(&self, cpu: &CPU, pc: u16) -> (usize, usize) {
         let result = self
             .find_window(cpu, 1, 0, pc)

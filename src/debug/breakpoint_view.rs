@@ -193,6 +193,8 @@ enum Command {
     Watch,
 }
 
+/// Represents the widget responsible for displaying the different
+/// breakpoints created during the debugging session.
 pub struct BreakpointView {
     init: bool,
     selected: bool,
@@ -202,6 +204,7 @@ pub struct BreakpointView {
 }
 
 impl BreakpointView {
+    /// Creates a new `BreakpointView` widget.
     pub fn new() -> Self {
         BreakpointView {
             init: false,

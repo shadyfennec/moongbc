@@ -13,6 +13,8 @@ use tui::{
     Frame,
 };
 
+/// Represents the widget responsible for displaying the current values of
+/// the different registers of the CPU.
 pub struct RegisterView<'a> {
     registers: Registers,
     text: Vec<Text<'a>>,
@@ -118,6 +120,7 @@ impl<'a> Widget for RegisterView<'a> {
 }
 
 impl<'a> RegisterView<'a> {
+    /// Creates a new `RegisterView` widget.
     pub fn new() -> RegisterView<'a> {
         RegisterView {
             registers: Registers::new(),

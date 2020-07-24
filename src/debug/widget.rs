@@ -9,19 +9,57 @@ use tui::{
     Frame,
 };
 
+/// Represents an interactable element of the terminal UI, presenting data and possibly ways to
+/// interact with them.
 pub trait Widget {
+    /// Refreshes the content of the widget, readying it to be displayed with up-to-date information.
     fn refresh(&mut self, cpu: &CPU);
+
+    /// Draws the widget on the screen, in the area specified by `chunk`.
     fn draw(&mut self, f: &mut Frame<CrosstermBackend<Stdout>>, chunk: Rect, cpu: &CPU);
+
+    /// Selects the widget, in order to toggle visual elements that shows that the widget
+    /// is selected (title color, borders, ...)
     fn select(&mut self);
+
+    /// Deselects the widget.
     fn deselect(&mut self);
+
+    /// Returns whether or not the widget is currently selected
     fn is_selected(&self) -> bool;
+
+    /// Handles a `KeyEvent` input from the user, processing it. The widget can either
+    /// handle the input internally (for example, shifting a cursor upwards or downwards in a list),
+    /// in which case it returns `None`; or it can signal that the input leads to a text input,
+    /// in which case it returns `Some` tuple containing the `WidgetKind` to call back after
+    /// the text input, and a `String` which represents the prompt.
+    ///
+    /// For example, if the widget returns `Some(Assembly, "Go to address:")`, this means
+    /// that the widget requires a text input, that will be then processed by the widget
+    /// with the kind `Assembly`, with a prompt reading `"Go to address:"`. Usually, the
+    /// `WidgetKind` returned is the same as the one from the widget called.
+    ///
+    /// The text input is usually then processed by using the `process_input` function.
     fn handle_key(&mut self, _: KeyEvent, _: &mut CPU) -> Option<(WidgetKind, String)> {
         None
     }
+
+    /// Processes a text input from the input widget. This is generally used after a call
+    /// of `handle_key` that returned `Some`. The text input is usually processed according to
+    /// the last command that was requested before the text input; this requires some kind of
+    /// memorisation on the implementation side.
+    ///
+    /// The input can be malformed and not suitable for the widget, in which case the function
+    /// returns `Err(Option<String>)`. The `Option` here is used to possibly send to the input
+    /// widget a custom error message.
+    ///
+    /// If the input was processed successfully, the function returns `Ok(())`.
     fn process_input(&mut self, _: String, _: &mut CPU) -> Result<(), Option<String>> {
         Ok(())
     }
 
+    /// Returns the `Style` used for the title, depending on if the widget is currently selected
+    /// or not.
     fn title_style(&self) -> Style {
         if self.is_selected() {
             Style::default().fg(Color::Yellow)
@@ -31,15 +69,21 @@ pub trait Widget {
     }
 }
 
+/// The different kind of widgets present in this application.
 #[derive(PartialEq, Copy, Clone)]
 pub enum WidgetKind {
+    /// The disassembly window, implemented by the `Assembly` widget.
     Assembly,
+    /// The breakpoint visualisation window, implemented by the `BreakpointView` widget.
     Breakpoints,
+    /// The memory map visualisation window, implemented by the `MemoryView` widget.
     Memory,
+    /// The register visualisation window, implemented by the `RegisterView` widget.
     Registers,
 }
 
 impl WidgetKind {
+    /// Returns the widget on the left of this widget.
     pub fn left(&self) -> Option<WidgetKind> {
         match self {
             WidgetKind::Assembly => Some(WidgetKind::Registers),
@@ -49,6 +93,7 @@ impl WidgetKind {
         }
     }
 
+    /// Returns the widget on the right of this widget.
     pub fn right(&self) -> Option<WidgetKind> {
         match self {
             WidgetKind::Assembly => None,
@@ -58,6 +103,7 @@ impl WidgetKind {
         }
     }
 
+    /// Returns the widget on top of this widget.
     pub fn up(&self) -> Option<WidgetKind> {
         match self {
             WidgetKind::Assembly => None,
@@ -67,6 +113,7 @@ impl WidgetKind {
         }
     }
 
+    /// Returns the widget underneath this widget.
     pub fn down(&self) -> Option<WidgetKind> {
         match self {
             WidgetKind::Assembly => Some(WidgetKind::Breakpoints),
@@ -79,6 +126,9 @@ impl WidgetKind {
 
 type WidgetWithKind = (WidgetKind, Box<dyn Widget>);
 
+/// Represents the list of widgets in the application, responsible
+/// of refreshing, drawing, and dispatching the inputs to the
+/// correct widget.
 pub struct WidgetList {
     widgets: Vec<WidgetWithKind>,
     input: Input,
@@ -86,6 +136,7 @@ pub struct WidgetList {
 }
 
 impl WidgetList {
+    /// Creates a new, empty `WidgetList`.
     pub fn new() -> WidgetList {
         WidgetList {
             widgets: vec![],
@@ -94,16 +145,20 @@ impl WidgetList {
         }
     }
 
+    /// Adds a new widget to the list
     pub fn add(&mut self, widget: Box<dyn Widget>, kind: WidgetKind) {
         self.widgets.push((kind, widget));
     }
 
+    /// Refreshes all the widgets in the list.
     pub fn refresh(&mut self, cpu: &CPU) {
         self.widgets.iter_mut().for_each(|(_, w)| {
             w.refresh(cpu);
         })
     }
 
+    /// Selects a widget based on the specified kind, and deselects all the others.
+    /// If `None` is passed, then everything is deselected.
     pub fn select(&mut self, kind: Option<WidgetKind>) {
         self.widgets.iter_mut().for_each(|(k, w)| match (&kind, k) {
             (Some(a), b) if *a == *b => w.select(),
@@ -111,10 +166,12 @@ impl WidgetList {
         });
     }
 
+    /// Returns the index of the widget that is currently selected.
     pub fn selected(&mut self) -> Option<usize> {
         self.widgets.iter().position(|(_, w)| w.is_selected())
     }
 
+    /// Returns the index of the widget corresponding to the specified kind.
     pub fn find(&self, kind: &WidgetKind) -> Option<usize> {
         self.widgets.iter().position(|(k, _)| *k == *kind)
     }
@@ -259,6 +316,8 @@ impl WidgetList {
         }
     }
 
+    /// Handles a keyboard input from the terminal, and dispatches it to the correct widget, if any.
+    /// This function returns `true` if the program should quit.
     pub fn handle_key(&mut self, key: Event, cpu: &mut CPU) -> bool {
         let mut ret = false;
         self.handle_input(key, cpu)
@@ -285,6 +344,9 @@ impl WidgetList {
         ret
     }
 
+    // This might be beneficial for the user to be able to configure this, but it might
+    // just be too much trouble...
+    /// Draws all the widgets contained in the list, according to a hard-coded layout.
     pub fn draw(&mut self, f: &mut Frame<CrosstermBackend<Stdout>>, cpu: &CPU) {
         let top_bottom = Layout::default()
             .direction(Direction::Vertical)

@@ -80,6 +80,7 @@ impl InputString {
     }
 }
 
+/// A special widget, used to handle text input from the user.
 pub struct Input {
     input: InputString,
     title: String,
@@ -131,6 +132,7 @@ impl Widget for Input {
 }
 
 impl Input {
+    /// Creates a new `Input` widget.
     pub fn new() -> Input {
         Input {
             input: InputString::new(),
@@ -142,18 +144,28 @@ impl Input {
         }
     }
 
+    /// Sets the title (prompt) of the input.
     pub fn set_title(&mut self, t: String) {
         self.title = t;
     }
 
+    /// Sets the error status of the input.
     pub fn set_error(&mut self, error: bool) {
         self.error = error;
     }
 
+    /// Sets the text to be displayed in the event of an error.
+    /// If the specified title is `None`, a default text will appear instead.
     pub fn set_error_title(&mut self, error_title: Option<String>) {
         self.error_title = error_title;
     }
 
+    /// Handles input keys and returns:
+    /// - `Some(Ok(String))` if the input is complete and the text should be
+    ///   forwarded to the correct widget,
+    /// - `Some(Err(()))` if the input was not carried through (typically when
+    ///   pressing the Esc key), and no input text should be forwarded to the widget,
+    /// - `None` if the input is not finished, and remains to be typed.
     pub fn handle_input_key(&mut self, key: KeyEvent) -> Option<Result<String, ()>> {
         match key.code {
             KeyCode::Char(ch) => {
