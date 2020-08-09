@@ -1,4 +1,5 @@
-use crate::cpu::CPU;
+use crate::{cpu::CPU, ram::MemoryError};
+use std::fmt;
 
 /// Represents a byte, where each bit is accessible as a boolean value.
 #[derive(Copy, Clone, Default)]
@@ -44,10 +45,42 @@ impl BitField {
     }
 }
 
+#[derive(Debug)]
+pub struct ReadError(pub ReadErrorKind);
+
+#[derive(Debug)]
+pub enum ReadErrorKind {
+    MemoryError(MemoryError),
+}
+
+impl fmt::Display for ReadError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.0 {
+            ReadErrorKind::MemoryError(e) => write!(f, "Memory error: {}", e),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct WriteError(pub WriteErrorKind);
+
+#[derive(Debug)]
+pub enum WriteErrorKind {
+    MemoryError(MemoryError),
+}
+
+impl fmt::Display for WriteError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.0 {
+            WriteErrorKind::MemoryError(e) => write!(f, "Memory error: {}", e),
+        }
+    }
+}
+
 /// Represents something that holds data that can be read.
 pub trait Src<T> {
     /// Tries to read a value, returning it if it's possible, or `None` otherwise.
-    fn try_read(&self, cpu: &CPU) -> Option<T>;
+    fn try_read(&self, cpu: &CPU) -> Result<T, ReadError>;
 
     /// Reads a value from the source.
     /// ### Panics
@@ -59,7 +92,7 @@ pub trait Src<T> {
 
 /// Represents something that holds data that can be written to.
 pub trait Dst<T> {
-    fn try_write(&self, cpu: &mut CPU, value: T) -> Result<(), String>;
+    fn try_write(&self, cpu: &mut CPU, value: T) -> Result<(), WriteError>;
     /// Writes a value to the destination.
     fn write(&self, cpu: &mut CPU, value: T) {
         self.try_write(cpu, value).unwrap()
@@ -85,14 +118,14 @@ pub trait Dst<T> {
 }
 
 impl Src<u8> for u8 {
-    fn try_read(&self, _: &CPU) -> Option<u8> {
-        Some(*self)
+    fn try_read(&self, _: &CPU) -> Result<u8, ReadError> {
+        Ok(*self)
     }
 }
 
 impl Src<u16> for u16 {
-    fn try_read(&self, _: &CPU) -> Option<u16> {
-        Some(*self)
+    fn try_read(&self, _: &CPU) -> Result<u16, ReadError> {
+        Ok(*self)
     }
 }
 

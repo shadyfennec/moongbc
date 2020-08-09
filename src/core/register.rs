@@ -1,6 +1,6 @@
 use crate::cpu::CPU;
 use crate::memory_map::Mem;
-use crate::{BitField, Dst, Src};
+use crate::{BitField, Dst, ReadError, Src, WriteError};
 
 use std::fmt;
 use std::iter::repeat;
@@ -10,7 +10,7 @@ use std::iter::repeat;
 pub struct Imm8;
 
 impl Src<u8> for Imm8 {
-    fn try_read(&self, cpu: &CPU) -> Option<u8> {
+    fn try_read(&self, cpu: &CPU) -> Result<u8, ReadError> {
         Mem(Reg16::PC.read(cpu) + 1).try_read(cpu)
     }
 }
@@ -20,14 +20,12 @@ impl Src<u8> for Imm8 {
 pub struct Imm16;
 
 impl Src<u16> for Imm16 {
-    fn try_read(&self, cpu: &CPU) -> Option<u16> {
-        let low = Mem(Reg16::PC.read(cpu) + 1).try_read(cpu);
-        let high = Mem(Reg16::PC.read(cpu) + 2).try_read(cpu);
-
-        match (low, high) {
-            (Some(low), Some(high)) => Some(((high as u16) << 8) | low as u16),
-            _ => None,
-        }
+    fn try_read(&self, cpu: &CPU) -> Result<u16, ReadError> {
+        Mem(Reg16::PC.read(cpu) + 1).try_read(cpu).and_then(|low| {
+            Mem(Reg16::PC.read(cpu) + 2)
+                .try_read(cpu)
+                .map(|high| ((high as u16) << 8) | low as u16)
+        })
     }
 }
 
@@ -36,7 +34,7 @@ impl Src<u16> for Imm16 {
 pub struct SignedImm8;
 
 impl Src<i8> for SignedImm8 {
-    fn try_read(&self, cpu: &CPU) -> Option<i8> {
+    fn try_read(&self, cpu: &CPU) -> Result<i8, ReadError> {
         Imm8.try_read(cpu).map(|i| i as i8)
     }
 }
@@ -86,13 +84,13 @@ impl Reg8 {
 }
 
 impl Src<u8> for Reg8 {
-    fn try_read(&self, cpu: &CPU) -> Option<u8> {
-        Some(cpu.registers.get_8(self))
+    fn try_read(&self, cpu: &CPU) -> Result<u8, ReadError> {
+        Ok(cpu.registers.get_8(self))
     }
 }
 
 impl Dst<u8> for Reg8 {
-    fn try_write(&self, cpu: &mut CPU, value: u8) -> Result<(), String> {
+    fn try_write(&self, cpu: &mut CPU, value: u8) -> Result<(), WriteError> {
         cpu.registers.set_8(self, value);
         Ok(())
     }
@@ -139,13 +137,13 @@ impl Reg16 {
 }
 
 impl Src<u16> for Reg16 {
-    fn try_read(&self, cpu: &CPU) -> Option<u16> {
-        Some(cpu.registers.get_16(self))
+    fn try_read(&self, cpu: &CPU) -> Result<u16, ReadError> {
+        Ok(cpu.registers.get_16(self))
     }
 }
 
 impl Dst<u16> for Reg16 {
-    fn try_write(&self, cpu: &mut CPU, value: u16) -> Result<(), String> {
+    fn try_write(&self, cpu: &mut CPU, value: u16) -> Result<(), WriteError> {
         cpu.registers.set_16(self, value);
         Ok(())
     }
@@ -185,14 +183,14 @@ impl Flag {
 }
 
 impl Src<bool> for Flag {
-    fn try_read(&self, cpu: &CPU) -> Option<bool> {
+    fn try_read(&self, cpu: &CPU) -> Result<bool, ReadError> {
         let flags: BitField = Reg8::F.read(cpu).into();
-        Some(flags.get(self.bit()))
+        Ok(flags.get(self.bit()))
     }
 }
 
 impl Dst<bool> for Flag {
-    fn try_write(&self, cpu: &mut CPU, value: bool) -> Result<(), String> {
+    fn try_write(&self, cpu: &mut CPU, value: bool) -> Result<(), WriteError> {
         let mut flags: BitField = Reg8::F.read(cpu).into();
         flags.set(self.bit(), value);
         Reg8::F.try_write(cpu, flags.into())

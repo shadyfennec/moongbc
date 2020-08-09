@@ -1,7 +1,9 @@
 use crate::cartridge::Cartridge;
 use crate::cpu::CPU;
-use crate::ram::{IORegisters, HRAM, OAM, RAM, VRAM, WRAM};
-use crate::{register::Reg16, BitField, Dst, Src};
+use crate::ram::{IORegisters, MemoryError, MemoryErrorKind, MemoryRegion, HRAM, OAM, VRAM, WRAM};
+use crate::{
+    register::Reg16, BitField, Dst, ReadError, ReadErrorKind, Src, WriteError, WriteErrorKind,
+};
 
 use std::fmt;
 
@@ -10,25 +12,30 @@ use std::fmt;
 pub struct Mem<S: Src<u16>>(pub S);
 
 impl<S: Src<u16>> Src<u8> for Mem<S> {
-    fn try_read(&self, cpu: &CPU) -> Option<u8> {
-        cpu.memory_map.read(self.0.read(cpu))
+    fn try_read(&self, cpu: &CPU) -> Result<u8, ReadError> {
+        cpu.memory_map
+            .read(self.0.read(cpu))
+            .map_err(|e| ReadError(ReadErrorKind::MemoryError(e)))
     }
 }
 
 impl<S: Src<u16>> Dst<u8> for Mem<S> {
-    fn try_write(&self, cpu: &mut CPU, value: u8) -> Result<(), String> {
-        cpu.memory_map.write(self.0.read(cpu), value)
+    fn try_write(&self, cpu: &mut CPU, value: u8) -> Result<(), WriteError> {
+        cpu.memory_map
+            .write(self.0.read(cpu), value)
+            .map_err(|e| WriteError(WriteErrorKind::MemoryError(e)))
     }
 }
 
 impl<S: Src<u16>> Dst<u16> for Mem<S> {
-    fn try_write(&self, cpu: &mut CPU, value: u16) -> Result<(), String> {
+    fn try_write(&self, cpu: &mut CPU, value: u16) -> Result<(), WriteError> {
         let high = (value >> 8) as u8;
         let low = (value & 0xFF) as u8;
 
         cpu.memory_map
             .write(self.0.read(cpu), low)
             .and_then(|_| cpu.memory_map.write(self.0.read(cpu) + 1, high))
+            .map_err(|e| WriteError(WriteErrorKind::MemoryError(e)))
     }
 }
 
@@ -48,25 +55,37 @@ impl fmt::Display for Mem<Reg16> {
 pub struct Mem16<S: Src<u16>>(pub S);
 
 impl<S: Src<u16>> Src<u16> for Mem16<S> {
-    fn try_read(&self, cpu: &CPU) -> Option<u16> {
+    fn try_read(&self, cpu: &CPU) -> Result<u16, ReadError> {
+        /*
         let low = cpu.memory_map.read(self.0.read(cpu)).map(|v| v as u16);
         let high = cpu.memory_map.read(self.0.read(cpu) + 1).map(|v| v as u16);
 
         match (low, high) {
-            (Some(low), Some(high)) => Some((high << 8) | low),
+            (Ok(low), Ok(high)) => Ok((high << 8) | low),
             _ => None,
         }
+        */
+        cpu.memory_map
+            .read(self.0.read(cpu))
+            .map(|v| v as u16)
+            .and_then(|low| {
+                cpu.memory_map
+                    .read(self.0.read(cpu) + 1)
+                    .map(|high| (high as u16) << 8 | low)
+            })
+            .map_err(|e| ReadError(ReadErrorKind::MemoryError(e)))
     }
 }
 
 impl<S: Src<u16>> Dst<u16> for Mem16<S> {
-    fn try_write(&self, cpu: &mut CPU, value: u16) -> Result<(), String> {
+    fn try_write(&self, cpu: &mut CPU, value: u16) -> Result<(), WriteError> {
         let high = (value >> 8) as u8;
         let low = (value & 0xFF) as u8;
 
         cpu.memory_map
             .write(self.0.read(cpu), low)
             .and_then(|_| cpu.memory_map.write(self.0.read(cpu) + 1, high))
+            .map_err(|e| WriteError(WriteErrorKind::MemoryError(e)))
     }
 }
 
@@ -77,22 +96,26 @@ impl<S: Src<u16>> Dst<u16> for Mem16<S> {
 pub struct IOMem<S: Src<u8>>(pub S);
 
 impl<S: Src<u8>> Src<u8> for IOMem<S> {
-    fn try_read(&self, cpu: &CPU) -> Option<u8> {
+    fn try_read(&self, cpu: &CPU) -> Result<u8, ReadError> {
         let offset = (self.0.read(cpu) as i8) as i32;
         let base = 0xFF00i32;
 
         let addr = (base + offset) as u16;
-        cpu.memory_map.read(addr)
+        cpu.memory_map
+            .read(addr)
+            .map_err(|e| ReadError(ReadErrorKind::MemoryError(e)))
     }
 }
 
 impl<S: Src<u8>> Dst<u8> for IOMem<S> {
-    fn try_write(&self, cpu: &mut CPU, value: u8) -> Result<(), String> {
+    fn try_write(&self, cpu: &mut CPU, value: u8) -> Result<(), WriteError> {
         let offset = (self.0.read(cpu) as i8) as i32;
         let base = 0xFF00i32;
 
         let addr = (base + offset) as u16;
-        cpu.memory_map.write(addr, value)
+        cpu.memory_map
+            .write(addr, value)
+            .map_err(|e| WriteError(WriteErrorKind::MemoryError(e)))
     }
 }
 
@@ -182,43 +205,71 @@ impl MemoryMap {
             0xFFFF => "INT ",
         }
     }
+
+    fn read_register(&self, addr: u16) -> Option<u8> {
+        match addr {
+            _ => None,
+        }
+    }
+
+    fn write_register(&mut self, addr: u16, value: u8) -> Option<u8> {
+        match addr {
+            0xFF70 => {
+                self.wram.set_bank((value & 7) as usize);
+                Some(value & 7)
+            }
+            _ => None,
+        }
+    }
 }
 
-impl RAM for MemoryMap {
-    fn read(&self, addr: u16) -> Option<u8> {
+impl MemoryRegion for MemoryMap {
+    fn read(&self, addr: u16) -> Result<u8, MemoryError> {
         match addr {
             0x0000..=0x7FFF | 0xA000..=0xBFFF => {
                 if self.boot_flag && addr < self.bootstrap.len() as u16 {
-                    self.bootstrap.read(addr)
+                    self.bootstrap
+                        .read(addr)
+                        .ok_or(MemoryError(MemoryErrorKind::OutOfBounds))
                 } else {
-                    self.cartridge.as_ref().unwrap().read(addr).ok()
+                    self.cartridge
+                        .as_ref()
+                        .unwrap()
+                        .read(addr)
+                        .map_err(|e| MemoryError(MemoryErrorKind::MBCError(e)))
                 }
             }
             0x8000..=0x9FFF => self.vram.read(addr),
             0xC000..=0xDFFF => self.wram.read(addr),
             0xE000..=0xFDFF => self.wram.read(addr - 0x2000),
             0xFE00..=0xFE9F => self.oam.read(addr),
-            0xFEA0..=0xFEFF => Some(0),
-            0xFF00..=0xFF7F => self.io_registers.read(addr),
+            0xFEA0..=0xFEFF => Ok(0),
+            0xFF00..=0xFF7F => match self.read_register(addr) {
+                Some(v) => Ok(v),
+                None => self.io_registers.read(addr),
+            },
             0xFF80..=0xFFFE => self.hram.read(addr),
-            0xFFFF => Some(self.interrupt_enable.into()),
+            0xFFFF => Ok(self.interrupt_enable.into()),
         }
     }
 
-    fn write(&mut self, addr: u16, value: u8) -> Result<(), String> {
+    fn write(&mut self, addr: u16, value: u8) -> Result<(), MemoryError> {
         match addr {
             0x0000..=0x7FFF | 0xA000..=0xBFFF => self
                 .cartridge
                 .as_mut()
                 .unwrap()
                 .write(addr, value)
-                .map_err(|e| format!("{:?}", e)),
+                .map_err(|e| MemoryError(MemoryErrorKind::MBCError(e))),
             0x8000..=0x9FFF => self.vram.write(addr, value),
             0xC000..=0xDFFF => self.wram.write(addr, value),
             0xE000..=0xFDFF => self.wram.write(addr - 0x2000, value),
             0xFE00..=0xFE9F => self.oam.write(addr, value),
-            0xFEA0..=0xFEFF => Err("Unused data range 0xFEA0 - 0xFEFF".to_string()),
-            0xFF00..=0xFF7F => self.io_registers.write(addr, value),
+            0xFEA0..=0xFEFF => Err(MemoryError(MemoryErrorKind::UnusedRange)),
+            0xFF00..=0xFF7F => {
+                let value = self.write_register(addr, value).unwrap_or(value);
+                self.io_registers.write(addr, value)
+            }
             0xFF80..=0xFFFE => self.hram.write(addr, value),
             0xFFFF => {
                 self.interrupt_enable.write(value);

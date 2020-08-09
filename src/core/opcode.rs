@@ -2,7 +2,7 @@ use crate::cpu::CPU;
 use crate::memory_map::{IOMem, Mem, Mem16};
 
 use crate::register::{Flag, Imm16, Imm8, Reg16, Reg8, SignedImm8};
-use crate::{Either, Src};
+use crate::{Either, ReadError, Src};
 use std::fmt;
 
 /// Describes a condition, used in jumps, calls and returns.
@@ -27,7 +27,7 @@ impl fmt::Display for Condition {
 }
 
 impl Src<bool> for Condition {
-    fn try_read(&self, cpu: &CPU) -> Option<bool> {
+    fn try_read(&self, cpu: &CPU) -> Result<bool, ReadError> {
         match self {
             Condition::NZ => Flag::Z.try_read(cpu).map(|b| !b),
             Condition::NC => Flag::C.try_read(cpu).map(|b| !b),
@@ -135,8 +135,8 @@ impl Decoder {
         let value = Mem(pc).try_read(cpu);
 
         match value {
-            None => None,
-            Some(value) => {
+            Err(_) => None,
+            Ok(value) => {
                 let reg16_arithmetic: Reg16 = match (value / 0x10) % 4 {
                     0 => Reg16::BC,
                     1 => Reg16::DE,
@@ -563,15 +563,18 @@ impl Opcode {
 
         Mem(pc + 1)
             .try_read(cpu)
+            .ok()
             .ok_or_else(unknown)
             .map(|i| i as i8)
             .and_then(|signed_imm8| {
                 Mem(pc + 1)
                     .try_read(cpu)
+                    .ok()
                     .ok_or_else(unknown)
                     .and_then(|imm8| {
                         Mem16(pc + 1)
                             .try_read(cpu)
+                            .ok()
                             .ok_or_else(unknown)
                             .map(|imm16| match self {
                                 Opcode::NOP => String::from("NOP"),

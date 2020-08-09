@@ -1,3 +1,4 @@
+use std::fmt;
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;
@@ -76,7 +77,7 @@ impl From<u8> for CartridgeType {
 
 /// Describes an error that could happen during a read or write in the cartridge
 /// memory map.
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone)]
 pub enum MBCError {
     /// A read or write was attempted on memory region `0xA000` - `0xBFFF`, but
     /// no external RAM is present in the cartridge.
@@ -103,6 +104,19 @@ pub enum MBCError {
     /// An external RAM read or write was issued while the RAM bank number is invalid (too high
     /// for the current amount of external RAM).
     InvalidRAMBank,
+}
+
+impl fmt::Display for MBCError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            MBCError::NoRAM => write!(f, "No RAM on the cartridge"),
+            MBCError::RAMDisabled => write!(f, "RAM is disabled"),
+            MBCError::ReadOnly => write!(f, "Write on read-only address"),
+            MBCError::InvalidAddress => write!(f, "Invalid address"),
+            MBCError::InvalidROMBank => write!(f, "Invalid ROM bank used"),
+            MBCError::InvalidRAMBank => write!(f, "Invalid RAM bank used"),
+        }
+    }
 }
 
 /// A read operation performed on the cartridge, parsed by the MBC to produce a single

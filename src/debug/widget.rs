@@ -349,10 +349,6 @@ impl WidgetList {
         ret
     }
 
-    pub fn set_message<S: Into<String>>(&mut self, message: S) {
-        self.input.set_message(message);
-    }
-
     // This might be beneficial for the user to be able to configure this, but it might
     // just be too much trouble...
     /// Draws all the widgets contained in the list, according to a hard-coded layout.

@@ -55,7 +55,7 @@ impl<'a> Widget for MemoryView<'a> {
                             .map(|a| {
                                 let addr = addr.saturating_add(a);
                                 let end = if a == 0xF { "\n" } else { "" };
-                                let data = if let Some(data) = Mem(addr).try_read(cpu) {
+                                let data = if let Ok(data) = Mem(addr).try_read(cpu) {
                                     format!("{:02x}", data)
                                 } else {
                                     String::from("??")
@@ -208,7 +208,9 @@ impl<'a> Widget for MemoryView<'a> {
                     },
                 },
                 Command::Set => match u8::from_hex_string(input) {
-                    Ok(value) => Mem(self.pos).try_write(cpu, value).map_err(Some),
+                    Ok(value) => Mem(self.pos)
+                        .try_write(cpu, value)
+                        .map_err(|e| Some(format!("{}", e))),
                     Err(_) => Err(None),
                 },
             },
