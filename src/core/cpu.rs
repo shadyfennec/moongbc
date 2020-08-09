@@ -178,24 +178,20 @@ impl CPU {
     }
 
     // Jumps, calls, returns
-    fn jump_relative<S: Src<i8>>(
-        &mut self,
-        condition: Option<Condition>,
-        offset: S,
-    ) -> Option<u16> {
-        let mut pc = Reg16::PC.read(self) as i32;
-        let offset = offset.read(self) as i32;
-        pc += offset;
+
+    // Returns the offset added to the next PC
+    fn jump_relative<S: Src<i8>>(&mut self, condition: Option<Condition>, offset: S) -> Option<i8> {
+        let offset = offset.read(self);
 
         match condition {
             Some(c) => {
                 if c.read(self) {
-                    Some(pc as u16)
+                    Some(offset)
                 } else {
                     None
                 }
             }
-            None => Some(pc as u16),
+            None => Some(offset),
         }
     }
 
@@ -632,6 +628,7 @@ impl CPU {
     /// on the instruction size in bytes.
     fn execute_opcode(&mut self, opcode: Opcode) -> Option<u16> {
         let mut maybe_pc = None;
+        let next_pc = Reg16::PC.read(self) + opcode.size() as u16;
         match opcode {
             Opcode::NOP => {}
             Opcode::STOP => unimplemented!(),
@@ -640,7 +637,9 @@ impl CPU {
             Opcode::EI => unimplemented!(),
 
             Opcode::JR(c, o) => {
-                maybe_pc = self.jump_relative(c, o);
+                maybe_pc = self
+                    .jump_relative(c, o)
+                    .map(|o| ((next_pc as i32) + (o as i32)) as u16);
             }
             Opcode::RET(c) => {
                 maybe_pc = self.ret(c);
