@@ -141,7 +141,7 @@ impl CPU {
     }
 
     pub fn run_breakpoints(&mut self) {
-        while self.check_breakpoints() {
+        while !self.check_breakpoints() {
             self.step()
         }
     }

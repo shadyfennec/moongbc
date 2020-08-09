@@ -22,6 +22,10 @@ impl InputString {
         }
     }
 
+    pub fn set(&mut self, string: String) {
+        self.chars = string.chars().collect();
+    }
+
     pub fn add(&mut self, c: char) {
         self.chars.insert(self.pos, c);
         self.pos += 1;
@@ -118,6 +122,7 @@ impl Widget for Input {
     fn select(&mut self) {
         self.selected = true;
         self.title_style = Style::default().fg(Color::Yellow);
+        self.input.clear();
     }
     fn deselect(&mut self) {
         self.selected = false;
@@ -158,6 +163,10 @@ impl Input {
     /// If the specified title is `None`, a default text will appear instead.
     pub fn set_error_title(&mut self, error_title: Option<String>) {
         self.error_title = error_title;
+    }
+
+    pub fn set_message<S: Into<String>>(&mut self, message: S) {
+        self.input.set(message.into());
     }
 
     /// Handles input keys and returns:

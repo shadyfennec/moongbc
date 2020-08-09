@@ -1,5 +1,6 @@
 use super::input::Input;
 use crate::cpu::CPU;
+use crate::debug::debugger::KeyAction;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use std::io::Stdout;
 use tui::{
@@ -228,25 +229,29 @@ impl WidgetList {
         }
     }
 
-    fn global_keys(&mut self, event: Event, ret: &mut bool, cpu: &mut CPU) -> Option<()> {
+    fn global_keys(&mut self, event: Event, ret: &mut KeyAction) -> Option<()> {
         let key = self.event_to_key(event);
         match key.code {
             KeyCode::Char('q') => {
-                *ret = true;
+                *ret = KeyAction::Quit;
                 Some(())
             }
             KeyCode::Char('n') => {
-                cpu.step();
-                self.refresh(cpu);
+                *ret = KeyAction::Step;
                 Some(())
             }
-            KeyCode::Char('r') => loop {
-                cpu.step();
-                self.refresh(cpu);
-                if cpu.check_breakpoints() {
-                    break Some(());
-                }
-            },
+            KeyCode::Char('r') => {
+                *ret = KeyAction::Run;
+                Some(())
+            }
+            KeyCode::Char('e') => {
+                *ret = KeyAction::RunToEnd;
+                Some(())
+            }
+            KeyCode::Char(' ') => {
+                *ret = KeyAction::Stop;
+                Some(())
+            }
             KeyCode::Esc => {
                 self.select(None);
                 Some(())
@@ -318,10 +323,10 @@ impl WidgetList {
 
     /// Handles a keyboard input from the terminal, and dispatches it to the correct widget, if any.
     /// This function returns `true` if the program should quit.
-    pub fn handle_key(&mut self, key: Event, cpu: &mut CPU) -> bool {
-        let mut ret = false;
+    pub fn handle_key(&mut self, key: Event, cpu: &mut CPU) -> KeyAction {
+        let mut ret = KeyAction::Wait;
         self.handle_input(key, cpu)
-            .or_else(|| self.global_keys(key, &mut ret, cpu))
+            .or_else(|| self.global_keys(key, &mut ret))
             .or_else(|| self.arrow_keys(key, cpu))
             .or_else(|| self.direct_widget_keys(key, cpu))
             .or_else(|| {
@@ -342,6 +347,10 @@ impl WidgetList {
         self.refresh(cpu);
 
         ret
+    }
+
+    pub fn set_message<S: Into<String>>(&mut self, message: S) {
+        self.input.set_message(message);
     }
 
     // This might be beneficial for the user to be able to configure this, but it might
