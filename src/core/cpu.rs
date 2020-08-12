@@ -129,6 +129,12 @@ impl CPU {
         Reg16::PC.write(self, new_pc);
     }
 
+    /// Executes one step of instruction, and returns true if a breakpoint is triggered
+    pub fn step_check(&mut self) -> bool {
+        self.step();
+        self.check_breakpoints()
+    }
+
     /// Runs until an error occurs.
     pub fn run(&mut self) {
         loop {
@@ -144,6 +150,10 @@ impl CPU {
         while !self.check_breakpoints() {
             self.step()
         }
+    }
+
+    pub fn add_breakpoint(&mut self, breakpoint: Breakpoint) {
+        self.breakpoints.push(breakpoint);
     }
 
     // Special operations

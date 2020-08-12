@@ -1,6 +1,5 @@
 use super::input::Input;
 use crate::cpu::CPU;
-use crate::debug::debugger::KeyAction;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use std::io::Stdout;
 use tui::{
@@ -9,6 +8,13 @@ use tui::{
     style::{Color, Style},
     Frame,
 };
+
+pub enum KeyAction {
+    Nothing,
+    Run,
+    Step,
+    Quit,
+}
 
 /// Represents an interactable element of the terminal UI, presenting data and possibly ways to
 /// interact with them.
@@ -244,12 +250,9 @@ impl WidgetList {
                 *ret = KeyAction::Run;
                 Some(())
             }
-            KeyCode::Char('e') => {
-                *ret = KeyAction::RunToEnd;
-                Some(())
-            }
+
             KeyCode::Char(' ') => {
-                *ret = KeyAction::Stop;
+                *ret = KeyAction::Nothing;
                 Some(())
             }
             KeyCode::Esc => {
@@ -324,7 +327,7 @@ impl WidgetList {
     /// Handles a keyboard input from the terminal, and dispatches it to the correct widget, if any.
     /// This function returns `true` if the program should quit.
     pub fn handle_key(&mut self, key: Event, cpu: &mut CPU) -> KeyAction {
-        let mut ret = KeyAction::Wait;
+        let mut ret = KeyAction::Nothing;
         self.handle_input(key, cpu)
             .or_else(|| self.global_keys(key, &mut ret))
             .or_else(|| self.arrow_keys(key, cpu))
@@ -344,8 +347,6 @@ impl WidgetList {
                 }
                 Some(())
             });
-        self.refresh(cpu);
-
         ret
     }
 

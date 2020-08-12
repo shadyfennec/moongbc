@@ -1,6 +1,6 @@
 use super::{
     assembly::Assembly, breakpoint_view::BreakpointView, memory_view::MemoryView,
-    register_view::RegisterView,
+    register_view::RegisterView, widget::KeyAction,
 };
 use crate::{
     cpu::CPU,
@@ -27,26 +27,11 @@ enum Event<I> {
     Tick,
 }
 
-/// The action to take after certain keys are pressed on a global scale, if any
-pub enum KeyAction {
-    // Quit the application
-    Quit,
-    // Run the CPU until further keys are pressed
-    Run,
-    // Run the CPU indefinitely
-    RunToEnd,
-    // Step once the CPU
-    Step,
-    // Wait for a key to be pressed
-    Wait,
-    // Explicitly stop running
-    Stop,
-}
-
 /// The terminal-based graphic debugger for the GMB emulator.
 pub struct Debugger {
     cpu: CPU,
     widgets: WidgetList,
+    running: bool,
 }
 
 impl Debugger {
@@ -55,6 +40,7 @@ impl Debugger {
         Debugger {
             cpu,
             widgets: WidgetList::new(),
+            running: false,
         }
     }
 
@@ -78,7 +64,7 @@ impl Debugger {
         let mut terminal = Terminal::new(backend)?;
 
         let (tx, rx) = mpsc::channel();
-        let tick_rate = Duration::from_millis(250);
+        let tick_rate = Duration::from_millis(16);
 
         thread::spawn(move || {
             let mut last_tick = Instant::now();
@@ -109,37 +95,34 @@ impl Debugger {
             .add(Box::new(BreakpointView::new()), WidgetKind::Breakpoints);
         self.widgets.select(Some(WidgetKind::Memory));
 
-        let mut running = false;
-
         loop {
-            if running {
-                self.cpu.step();
-                if self.cpu.check_breakpoints() {
-                    running = false;
-                }
-                self.widgets.refresh(&self.cpu);
+            if self.running {
+                self.running = !self.cpu.step_check();
+            } else {
+                self.draw(&mut terminal)?;
             }
 
-            self.draw(&mut terminal)?;
-
-            let result = if running {
-                match rx.try_recv() {
-                    Ok(e) => Some(e),
-                    Err(e) => match e {
-                        mpsc::TryRecvError::Empty => None,
-                        mpsc::TryRecvError::Disconnected => break,
-                    },
-                }
-            } else {
-                match rx.recv() {
-                    Ok(e) => Some(e),
-                    Err(_) => break,
-                }
+            let input = match rx.try_recv() {
+                Ok(e) => Some(e),
+                Err(e) => match e {
+                    mpsc::TryRecvError::Empty => None,
+                    mpsc::TryRecvError::Disconnected => break,
+                },
             };
 
-            if let Some(result) = result {
+            if let Some(result) = input {
                 match result {
                     Event::Input(event) => match self.widgets.handle_key(event, &mut self.cpu) {
+                        KeyAction::Nothing => {
+                            self.refresh();
+                        }
+                        KeyAction::Run => {
+                            self.running = true;
+                        }
+                        KeyAction::Step => {
+                            self.cpu.step();
+                            self.refresh();
+                        }
                         KeyAction::Quit => {
                             disable_raw_mode()?;
                             execute!(
@@ -150,25 +133,10 @@ impl Debugger {
                             terminal.show_cursor()?;
                             break;
                         }
-                        KeyAction::Run => {
-                            running = true;
-                        }
-                        KeyAction::Step => {
-                            self.cpu.step();
-                            self.widgets.refresh(&self.cpu);
-                        }
-                        KeyAction::Wait => {}
-                        KeyAction::Stop => {
-                            running = false;
-                        }
-                        KeyAction::RunToEnd => {
-                            running = false;
-                            self.cpu.run_breakpoints();
-                            self.refresh();
-                        }
                     },
                     Event::Tick => {
-                        //self.widgets();
+                        self.refresh();
+                        self.draw(&mut terminal)?;
                     }
                 }
             }
