@@ -2,7 +2,7 @@ use crate::cpu::CPU;
 use crate::memory_map::{IOMem, Mem, Mem16};
 
 use crate::register::{Flag, Imm16, Imm8, Reg16, Reg8, SignedImm8};
-use crate::{Either, ReadError, Src};
+use crate::{Either, ReadWriteError, Src};
 use std::fmt;
 
 /// Describes a condition, used in jumps, calls and returns.
@@ -27,7 +27,7 @@ impl fmt::Display for Condition {
 }
 
 impl Src<bool> for Condition {
-    fn try_read(&self, cpu: &CPU) -> Result<bool, ReadError> {
+    fn try_read(&self, cpu: &CPU) -> Result<bool, ReadWriteError> {
         match self {
             Condition::NZ => Flag::Z.try_read(cpu).map(|b| !b),
             Condition::NC => Flag::C.try_read(cpu).map(|b| !b),
@@ -634,8 +634,8 @@ impl Opcode {
                                 Opcode::LDHAImmMem(r, _) => {
                                     format!("LDH {}, ($FF00+0x{:02x})", r, imm8)
                                 }
-                                Opcode::LDHCMemA(_, r) => format!("LDH ($FF00+{}), {}", imm8, r),
-                                Opcode::LDHACMem(r, _) => format!("LDH {}, ($FF00+{})", r, imm8),
+                                Opcode::LDHCMemA(_, r) => format!("LDH ($FF00+C), {}", r),
+                                Opcode::LDHACMem(r, _) => format!("LDH {}, ($FF00+C)", r),
                                 Opcode::LDImmMemA(_, r) => format!("LD ($0x{:04x}), {}", imm16, r),
                                 Opcode::LDAImmMem(r, _) => format!("LD {}, ($0x{:04x})", r, imm16),
 

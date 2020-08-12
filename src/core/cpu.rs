@@ -2,10 +2,26 @@ use crate::cartridge::Cartridge;
 use crate::memory_map::{Mem, MemoryMap};
 use crate::opcode::{Condition, Decoder, Opcode};
 use crate::register::{Flag, Imm16, Reg16, Reg8, Registers};
-use crate::{Dst, Src};
+use crate::{Dst, RWResult, ReadWriteError, Src};
 
 use std::fmt;
 use std::path::Path;
+
+#[derive(Debug)]
+pub struct RuntimeError(pub RuntimeErrorKind);
+
+#[derive(Debug)]
+pub enum RuntimeErrorKind {
+    ReadWriteError(ReadWriteError),
+}
+
+impl fmt::Display for RuntimeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.0 {
+            RuntimeErrorKind::ReadWriteError(e) => write!(f, "{}", e),
+        }
+    }
+}
 
 pub struct Watcher<S: Src<T> + fmt::Display, T> {
     src: S,
@@ -119,26 +135,33 @@ impl CPU {
 
     /// Executes the current instruction, modifying registers and memory
     /// accordingly, and advances towards the next instruction.
-    pub fn step(&mut self) {
+    pub fn step(&mut self) -> Result<(), RuntimeError> {
         let instruction = Decoder::decode(self);
         let size = instruction.size();
-        let new_pc = self
-            .execute_opcode(instruction)
-            .unwrap_or_else(|| Reg16::PC.read(self).wrapping_add(size as u16));
+
+        let mut result = Ok(());
+        let new_pc = match self.execute_opcode(instruction) {
+            Ok(o) => o.unwrap_or_else(|| Reg16::PC.read(self).wrapping_add(size as u16)),
+            Err(e) => {
+                result = Err(e);
+                Reg16::PC.read(self)
+            }
+        };
 
         Reg16::PC.write(self, new_pc);
+        result
     }
 
     /// Executes one step of instruction, and returns true if a breakpoint is triggered
-    pub fn step_check(&mut self) -> bool {
-        self.step();
-        self.check_breakpoints()
+    pub fn step_check(&mut self) -> Result<bool, RuntimeError> {
+        self.step()?;
+        Ok(self.check_breakpoints())
     }
 
     /// Runs until an error occurs.
-    pub fn run(&mut self) {
+    pub fn run(&mut self) -> Result<(), RuntimeError> {
         loop {
-            self.step();
+            self.step()?;
         }
     }
 
@@ -146,10 +169,11 @@ impl CPU {
         self.breakpoints.iter().map(|b| b.check(self)).any(|b| b)
     }
 
-    pub fn run_breakpoints(&mut self) {
+    pub fn run_breakpoints(&mut self) -> Result<(), RuntimeError> {
         while !self.check_breakpoints() {
-            self.step()
+            self.step()?
         }
+        Ok(())
     }
 
     pub fn add_breakpoint(&mut self, breakpoint: Breakpoint) {
@@ -158,12 +182,12 @@ impl CPU {
 
     // Special operations
 
-    fn daa<D: Dst<u8> + Src<u8>>(&mut self, dst: D) {
-        let mut a = dst.read(self) as u16;
+    fn daa<D: Dst<u8> + Src<u8>>(&mut self, dst: D) -> RWResult<()> {
+        let mut a = (dst.try_read(self)?) as u16;
 
-        let n = Flag::N.read(self);
-        let c = Flag::C.read(self);
-        let h = Flag::H.read(self);
+        let n = Flag::N.try_read(self)?;
+        let c = Flag::C.try_read(self)?;
+        let h = Flag::H.try_read(self)?;
 
         if n {
             if c {
@@ -182,36 +206,42 @@ impl CPU {
             }
         }
 
-        Flag::Z.write(self, (a as u8) == 0);
-        Flag::H.write(self, false);
-        dst.write(self, a as u8);
+        Flag::Z.try_write(self, (a as u8) == 0)?;
+        Flag::H.try_write(self, false)?;
+        dst.try_write(self, a as u8)?;
+
+        Ok(())
     }
 
     // Jumps, calls, returns
 
     // Returns the offset added to the next PC
-    fn jump_relative<S: Src<i8>>(&mut self, condition: Option<Condition>, offset: S) -> Option<i8> {
+    fn jump_relative<S: Src<i8>>(
+        &mut self,
+        condition: Option<Condition>,
+        offset: S,
+    ) -> RWResult<Option<i8>> {
         let offset = offset.read(self);
 
-        match condition {
+        Ok(match condition {
             Some(c) => {
-                if c.read(self) {
+                if c.try_read(self)? {
                     Some(offset)
                 } else {
                     None
                 }
             }
             None => Some(offset),
-        }
+        })
     }
 
-    fn ret(&mut self, condition: Option<Condition>) -> Option<u16> {
-        match condition {
+    fn ret(&mut self, condition: Option<Condition>) -> RWResult<Option<u16>> {
+        Ok(match condition {
             Some(c) => {
-                if c.read(self) {
-                    let low = Mem(Reg16::SP).read(self) as u16;
+                if c.try_read(self)? {
+                    let low = Mem(Reg16::SP).try_read(self)? as u16;
                     Reg16::SP.add(self, 1);
-                    let high = Mem(Reg16::SP).read(self) as u16;
+                    let high = Mem(Reg16::SP).try_read(self)? as u16;
                     Reg16::SP.add(self, 1);
 
                     Some((high << 8) | low)
@@ -220,317 +250,358 @@ impl CPU {
                 }
             }
             None => {
-                let low = Mem(Reg16::SP).read(self) as u16;
+                let low = Mem(Reg16::SP).try_read(self)? as u16;
                 Reg16::SP.add(self, 1);
-                let high = Mem(Reg16::SP).read(self) as u16;
+                let high = Mem(Reg16::SP).try_read(self)? as u16;
                 Reg16::SP.add(self, 1);
 
                 Some((high << 8) | low)
             }
-        }
+        })
     }
 
-    fn jump<S: Src<u16>>(&mut self, condition: Option<Condition>, addr: S) -> Option<u16> {
-        match condition {
+    fn jump<S: Src<u16>>(
+        &mut self,
+        condition: Option<Condition>,
+        addr: S,
+    ) -> RWResult<Option<u16>> {
+        Ok(match condition {
             Some(c) => {
                 if c.read(self) {
-                    Some(addr.read(self))
+                    Some(addr.try_read(self)?)
                 } else {
                     None
                 }
             }
-            None => Some(addr.read(self)),
-        }
+            None => Some(addr.try_read(self)?),
+        })
     }
 
-    fn call<S: Src<u16>>(&mut self, condition: Option<Condition>, addr: S) -> Option<u16> {
-        match condition {
+    fn call<S: Src<u16>>(
+        &mut self,
+        condition: Option<Condition>,
+        addr: S,
+    ) -> RWResult<Option<u16>> {
+        Ok(match condition {
             Some(c) => {
                 if c.read(self) {
-                    self.push(Reg16::PC.read(self) + 3);
-                    Some(addr.read(self))
+                    self.push(Reg16::PC.read(self) + 3)?;
+                    Some(addr.try_read(self)?)
                 } else {
                     None
                 }
             }
             None => {
-                self.push(Reg16::PC.read(self) + 3);
-                Some(addr.read(self))
+                self.push(Reg16::PC.read(self) + 3)?;
+                Some(addr.try_read(self)?)
             }
-        }
+        })
     }
 
     // 16-bit operations
 
-    fn increment_16<D: Src<u16> + Dst<u16>>(&mut self, dst: D) {
-        dst.add(self, 1);
+    fn increment_16<D: Src<u16> + Dst<u16>>(&mut self, dst: D) -> RWResult<()> {
+        dst.try_add(self, 1)
     }
 
-    fn decrement_16<D: Src<u16> + Dst<u16>>(&mut self, dst: D) {
-        dst.sub(self, 1);
+    fn decrement_16<D: Src<u16> + Dst<u16>>(&mut self, dst: D) -> RWResult<()> {
+        dst.try_sub(self, 1)
     }
 
-    fn add_16<D: Dst<u16> + Src<u16>, S: Src<u16>>(&mut self, dst: D, src: S) {
-        let a = dst.read(self) as u32;
-        let b = src.read(self) as u32;
+    fn add_16<D: Dst<u16> + Src<u16>, S: Src<u16>>(&mut self, dst: D, src: S) -> RWResult<()> {
+        let a = dst.try_read(self)? as u32;
+        let b = src.try_read(self)? as u32;
 
         let r = a + b;
 
-        dst.write(self, r as u16);
+        dst.try_write(self, r as u16)?;
 
         Flag::N.write(self, false);
         Flag::H.write(self, ((a ^ b ^ (r & 0xffff)) & 0x1000) != 0);
         Flag::C.write(self, (r & 0x10000) != 0);
+
+        Ok(())
     }
 
-    fn add_16_sp<D: Dst<u16> + Src<u16>, S: Src<i8>>(&mut self, dst: D, src: S) {
-        let a = dst.read(self) as i32;
-        let b = src.read(self) as i32;
+    fn add_16_sp<D: Dst<u16> + Src<u16>, S: Src<i8>>(&mut self, dst: D, src: S) -> RWResult<()> {
+        let a = dst.try_read(self)? as i32;
+        let b = src.try_read(self)? as i32;
 
         let r = a + b;
 
-        dst.write(self, r as u16);
+        dst.try_write(self, r as u16)?;
         Flag::Z.write(self, false);
         Flag::N.write(self, false);
         Flag::H.write(self, ((a ^ b ^ (r & 0xffff)) & 0x1000) != 0);
         Flag::C.write(self, (r & 0x10000) != 0);
+
+        Ok(())
     }
 
     // 16-bit loads & stack operations
 
-    fn load_16<D: Dst<u16> + Src<u16>, S: Src<u16>>(&mut self, dst: D, src: S) {
-        dst.write(self, src.read(self))
+    fn load_16<D: Dst<u16> + Src<u16>, S: Src<u16>>(&mut self, dst: D, src: S) -> RWResult<()> {
+        dst.try_write(self, src.read(self))
     }
 
-    fn load_16_sp<S: Src<u16>>(&mut self, dst: Mem<Imm16>, src: S) {
-        let value = src.read(self);
+    fn load_16_sp<S: Src<u16>>(&mut self, dst: Mem<Imm16>, src: S) -> RWResult<()> {
+        let value = src.try_read(self)?;
         let high = (value >> 8) as u8;
         let low = (value & 0xFF) as u8;
 
-        dst.write(self, low);
-        Mem(dst.0.read(self) + 1).write(self, high);
+        dst.try_write(self, low)?;
+        Mem(dst.0.try_read(self)? + 1).try_write(self, high)
     }
 
-    fn pop<D: Dst<u16>>(&mut self, dst: D) {
-        let low = Mem(Reg16::SP).read(self) as u16;
+    fn pop<D: Dst<u16>>(&mut self, dst: D) -> RWResult<()> {
+        let low = Mem(Reg16::SP).try_read(self)? as u16;
         Reg16::SP.add(self, 1);
-        let high = Mem(Reg16::SP).read(self) as u16;
+        let high = Mem(Reg16::SP).try_read(self)? as u16;
         Reg16::SP.add(self, 1);
 
-        dst.write(self, (high << 8) | low);
+        dst.try_write(self, (high << 8) | low)
     }
 
-    fn push<S: Src<u16>>(&mut self, src: S) {
+    fn push<S: Src<u16>>(&mut self, src: S) -> RWResult<()> {
         let value = src.read(self);
         let high = (value >> 8) as u8;
         let low = (value & 0xFF) as u8;
 
         Reg16::SP.sub(self, 1);
-        self.load(Mem(Reg16::SP), high);
+        self.load(Mem(Reg16::SP), high)?;
         Reg16::SP.sub(self, 1);
-        self.load(Mem(Reg16::SP), low);
+        self.load(Mem(Reg16::SP), low)?;
+
+        Ok(())
     }
 
-    fn load_hl_sp_offset<S: Src<i8>>(&mut self, src: S) {
-        let base = Reg16::SP.read(self) as i32;
-        let offset = src.read(self) as i32;
+    fn load_hl_sp_offset<S: Src<i8>>(&mut self, src: S) -> RWResult<()> {
+        let base = Reg16::SP.try_read(self)? as i32;
+        let offset = src.try_read(self)? as i32;
 
         let addr = base + offset;
 
-        Reg16::HL.write(self, addr as u16);
+        Reg16::HL.try_write(self, addr as u16)?;
 
         Flag::Z.write(self, false);
         Flag::N.write(self, false);
         Flag::H.write(self, ((base ^ offset ^ (addr & 0xFFFF)) & 0x10) == 0x10);
         Flag::C.write(self, ((base ^ offset ^ (addr & 0xFFFF)) & 0x100) == 0x100);
+
+        Ok(())
     }
 
     // Load
 
-    fn load<S: Src<u8>, D: Dst<u8>>(&mut self, dst: D, src: S) {
-        dst.write(self, src.read(self))
+    fn load<S: Src<u8>, D: Dst<u8>>(&mut self, dst: D, src: S) -> RWResult<()> {
+        dst.try_write(self, src.try_read(self)?)?;
+        Ok(())
     }
 
     // Arithmetic operations
 
-    fn increment<D: Dst<u8> + Src<u8>>(&mut self, dst: D) {
-        let current = dst.read(self);
+    fn increment<D: Dst<u8> + Src<u8>>(&mut self, dst: D) -> RWResult<()> {
+        let current = dst.try_read(self)?;
         let result = current.wrapping_add(1);
 
-        dst.write(self, result);
+        dst.try_write(self, result)?;
         Flag::Z.write(self, result == 0);
         Flag::N.write(self, false);
         Flag::H.write(self, result.trailing_zeros() >= 4);
+
+        Ok(())
     }
 
-    fn decrement<D: Dst<u8> + Src<u8>>(&mut self, dst: D) {
-        let current = dst.read(self);
+    fn decrement<D: Dst<u8> + Src<u8>>(&mut self, dst: D) -> RWResult<()> {
+        let current = dst.try_read(self)?;
         let result = current.wrapping_sub(1);
 
-        dst.write(self, result);
+        dst.try_write(self, result)?;
         Flag::Z.write(self, result == 0);
         Flag::N.write(self, true);
         Flag::H.write(self, result.trailing_zeros() >= 4);
+
+        Ok(())
     }
 
-    fn add<D: Dst<u8> + Src<u8>, S: Src<u8>>(&mut self, dst: D, src: S) {
-        let a = dst.read(self);
-        let b = src.read(self);
+    fn add<D: Dst<u8> + Src<u8>, S: Src<u8>>(&mut self, dst: D, src: S) -> RWResult<()> {
+        let a = dst.try_read(self)?;
+        let b = src.try_read(self)?;
 
         let (result, overflow) = a.overflowing_add(b);
         let c = a ^ b ^ result;
 
-        dst.write(self, result);
+        dst.try_write(self, result)?;
 
         Flag::Z.write(self, result == 0);
         Flag::N.write(self, false);
         Flag::H.write(self, c.trailing_zeros() >= 4);
         Flag::C.write(self, overflow);
+
+        Ok(())
     }
 
-    fn add_carry<D: Dst<u8> + Src<u8>, S: Src<u8>>(&mut self, dst: D, src: S) {
-        let a = dst.read(self) as u16;
-        let b = src.read(self) as u16;
+    fn add_carry<D: Dst<u8> + Src<u8>, S: Src<u8>>(&mut self, dst: D, src: S) -> RWResult<()> {
+        let a = dst.try_read(self)? as u16;
+        let b = src.try_read(self)? as u16;
         let c = Flag::C.read(self) as u16;
 
         let result = a + b + c;
 
-        dst.write(self, result as u8);
+        dst.try_write(self, result as u8)?;
 
         Flag::Z.write(self, (result as u8) == 0);
         Flag::N.write(self, false);
         Flag::H.write(self, ((a & 0xF) + (b & 0xF) + c) > 0xF);
         Flag::C.write(self, result > 0xFF);
+
+        Ok(())
     }
 
-    fn sub<D: Dst<u8> + Src<u8>, S: Src<u8>>(&mut self, dst: D, src: S) {
-        let a = dst.read(self);
-        let b = src.read(self);
+    fn sub<D: Dst<u8> + Src<u8>, S: Src<u8>>(&mut self, dst: D, src: S) -> RWResult<()> {
+        let a = dst.try_read(self)?;
+        let b = src.try_read(self)?;
 
         let result = a.wrapping_sub(b);
         let c = a ^ b ^ result;
 
-        dst.write(self, result);
+        dst.try_write(self, result)?;
 
         Flag::Z.write(self, result == 0);
         Flag::N.write(self, true);
         Flag::H.write(self, c.trailing_zeros() >= 4);
         Flag::C.write(self, c.trailing_zeros() >= 8);
+
+        Ok(())
     }
 
-    fn sub_carry<D: Dst<u8> + Src<u8>, S: Src<u8>>(&mut self, dst: D, src: S) {
-        let a = dst.read(self) as i16;
-        let b = src.read(self) as i16;
+    fn sub_carry<D: Dst<u8> + Src<u8>, S: Src<u8>>(&mut self, dst: D, src: S) -> RWResult<()> {
+        let a = dst.try_read(self)? as i16;
+        let b = src.try_read(self)? as i16;
         let c = Flag::C.read(self) as i16;
 
         let result = a.wrapping_sub(b).wrapping_sub(c);
 
-        dst.write(self, result as u8);
+        dst.try_write(self, result as u8)?;
 
         Flag::Z.write(self, result == 0);
         Flag::N.write(self, true);
         Flag::H.write(self, ((a & 0x0f) - (b & 0x0f) - c) < 0);
         Flag::C.write(self, result < 0);
+
+        Ok(())
     }
 
-    fn and<D: Dst<u8> + Src<u8>, S: Src<u8>>(&mut self, dst: D, src: S) {
-        let a = dst.read(self);
-        let b = src.read(self);
+    fn and<D: Dst<u8> + Src<u8>, S: Src<u8>>(&mut self, dst: D, src: S) -> RWResult<()> {
+        let a = dst.try_read(self)?;
+        let b = src.try_read(self)?;
 
         let result = a & b;
 
-        dst.write(self, result);
+        dst.try_write(self, result)?;
 
         Flag::Z.write(self, result == 0);
         Flag::N.write(self, false);
         Flag::H.write(self, true);
         Flag::C.write(self, false);
+
+        Ok(())
     }
 
-    fn xor<D: Dst<u8> + Src<u8>, S: Src<u8>>(&mut self, dst: D, src: S) {
-        let a = dst.read(self);
-        let b = src.read(self);
+    fn xor<D: Dst<u8> + Src<u8>, S: Src<u8>>(&mut self, dst: D, src: S) -> RWResult<()> {
+        let a = dst.try_read(self)?;
+        let b = src.try_read(self)?;
 
         let result = a ^ b;
 
-        dst.write(self, result);
+        dst.try_write(self, result)?;
 
         Flag::Z.write(self, result == 0);
         Flag::N.write(self, false);
         Flag::H.write(self, false);
         Flag::C.write(self, false);
+
+        Ok(())
     }
 
-    fn or<D: Dst<u8> + Src<u8>, S: Src<u8>>(&mut self, dst: D, src: S) {
-        let a = dst.read(self);
-        let b = src.read(self);
+    fn or<D: Dst<u8> + Src<u8>, S: Src<u8>>(&mut self, dst: D, src: S) -> RWResult<()> {
+        let a = dst.try_read(self)?;
+        let b = src.try_read(self)?;
 
         let result = a & b;
 
-        dst.write(self, result);
+        dst.try_write(self, result)?;
 
         Flag::Z.write(self, result == 0);
         Flag::N.write(self, false);
         Flag::H.write(self, false);
         Flag::C.write(self, false);
+
+        Ok(())
     }
 
-    fn compare<D: Dst<u8> + Src<u8>, S: Src<u8>>(&mut self, dst: D, src: S) {
-        let a = dst.read(self);
-        let b = src.read(self);
+    fn compare<D: Dst<u8> + Src<u8>, S: Src<u8>>(&mut self, dst: D, src: S) -> RWResult<()> {
+        let a = dst.try_read(self)?;
+        let b = src.try_read(self)?;
 
         Flag::Z.write(self, a == b);
         Flag::N.write(self, true);
         Flag::H.write(self, (a.wrapping_sub(b) & 0xF) > (a & 0xF));
         Flag::C.write(self, a < b);
+
+        Ok(())
     }
 
     // Bit operations
 
-    fn rlca(&mut self) {
-        self.rlc(Reg8::A);
+    fn rlca(&mut self) -> RWResult<()> {
+        self.rlc(Reg8::A)?;
         Flag::Z.write(self, false);
+        Ok(())
     }
 
-    fn rrca(&mut self) {
-        self.rrc(Reg8::A);
+    fn rrca(&mut self) -> RWResult<()> {
+        self.rrc(Reg8::A)?;
         Flag::Z.write(self, false);
+        Ok(())
     }
 
-    fn rla(&mut self) {
-        self.rl(Reg8::A);
+    fn rla(&mut self) -> RWResult<()> {
+        self.rl(Reg8::A)?;
         Flag::Z.write(self, false);
+        Ok(())
     }
 
-    fn rra(&mut self) {
-        self.rr(Reg8::A);
+    fn rra(&mut self) -> RWResult<()> {
+        self.rr(Reg8::A)?;
         Flag::Z.write(self, false);
+        Ok(())
     }
 
-    fn rlc<D: Src<u8> + Dst<u8>>(&mut self, dst: D) {
-        let value = dst.read(self);
+    fn rlc<D: Src<u8> + Dst<u8>>(&mut self, dst: D) -> RWResult<()> {
+        let value = dst.try_read(self)?;
         let result = value.rotate_left(1);
 
         Flag::Z.write(self, result == 0);
         Flag::N.write(self, false);
         Flag::H.write(self, false);
         Flag::C.write(self, (value & 0x80) == 0x80);
-        dst.write(self, result);
+        dst.try_write(self, result)
     }
 
-    fn rrc<D: Src<u8> + Dst<u8>>(&mut self, dst: D) {
-        let value = dst.read(self);
+    fn rrc<D: Src<u8> + Dst<u8>>(&mut self, dst: D) -> RWResult<()> {
+        let value = dst.try_read(self)?;
         let result = value >> 1;
 
         Flag::Z.write(self, result == 0);
         Flag::N.write(self, false);
         Flag::H.write(self, false);
         Flag::C.write(self, (value & 1) == 1);
-        dst.write(self, result);
+        dst.try_write(self, result)
     }
 
-    fn rl<D: Src<u8> + Dst<u8>>(&mut self, dst: D) {
-        let value = dst.read(self);
+    fn rl<D: Src<u8> + Dst<u8>>(&mut self, dst: D) -> RWResult<()> {
+        let value = dst.try_read(self)?;
         let old_c = Flag::C.read(self);
 
         let result = value.rotate_left(1);
@@ -541,11 +612,11 @@ impl CPU {
         Flag::H.write(self, false);
         Flag::C.write(self, (value & 0x80) == 0x80);
 
-        dst.write(self, value);
+        dst.try_write(self, value)
     }
 
-    fn rr<D: Src<u8> + Dst<u8>>(&mut self, dst: D) {
-        let value = dst.read(self);
+    fn rr<D: Src<u8> + Dst<u8>>(&mut self, dst: D) -> RWResult<()> {
+        let value = dst.try_read(self)?;
         let old_c = (Flag::C.read(self) as u8) << 7;
         let result = (value >> 1) | old_c;
 
@@ -553,11 +624,11 @@ impl CPU {
         Flag::N.write(self, false);
         Flag::H.write(self, false);
         Flag::C.write(self, (value & 1) == 1);
-        dst.write(self, result);
+        dst.try_write(self, result)
     }
 
-    fn sla<D: Src<u8> + Dst<u8>>(&mut self, dst: D) {
-        let value = dst.read(self);
+    fn sla<D: Src<u8> + Dst<u8>>(&mut self, dst: D) -> RWResult<()> {
+        let value = dst.try_read(self)?;
         let result = value << 1;
 
         Flag::Z.write(self, result == 0);
@@ -565,11 +636,11 @@ impl CPU {
         Flag::H.write(self, false);
         Flag::C.write(self, (value & 0x80) == 0x80);
 
-        dst.write(self, result);
+        dst.try_write(self, result)
     }
 
-    fn sra<D: Src<u8> + Dst<u8>>(&mut self, dst: D) {
-        let value = dst.read(self);
+    fn sra<D: Src<u8> + Dst<u8>>(&mut self, dst: D) -> RWResult<()> {
+        let value = dst.try_read(self)?;
         let msb = value & 0x80;
         let result = (value >> 1) | msb;
 
@@ -578,11 +649,11 @@ impl CPU {
         Flag::H.write(self, false);
         Flag::C.write(self, (value & 1) == 1);
 
-        dst.write(self, result);
+        dst.try_write(self, result)
     }
 
-    fn srl<D: Src<u8> + Dst<u8>>(&mut self, dst: D) {
-        let value = dst.read(self);
+    fn srl<D: Src<u8> + Dst<u8>>(&mut self, dst: D) -> RWResult<()> {
+        let value = dst.try_read(self)?;
         let result = value >> 1;
 
         Flag::Z.write(self, result == 0);
@@ -590,11 +661,11 @@ impl CPU {
         Flag::H.write(self, false);
         Flag::C.write(self, (value & 1) == 1);
 
-        dst.write(self, result);
+        dst.try_write(self, result)
     }
 
-    fn swap<D: Src<u8> + Dst<u8>>(&mut self, dst: D) {
-        let value = dst.read(self);
+    fn swap<D: Src<u8> + Dst<u8>>(&mut self, dst: D) -> RWResult<()> {
+        let value = dst.try_read(self)?;
         let high = value >> 4;
         let low = value & 0xF;
 
@@ -605,65 +676,57 @@ impl CPU {
         Flag::H.write(self, false);
         Flag::C.write(self, false);
 
-        dst.write(self, result);
+        dst.try_write(self, result)
     }
 
-    fn bit<D: Src<u8> + Dst<u8>>(&mut self, bit: u8, dst: D) {
-        let value = dst.read(self);
+    fn bit<D: Src<u8> + Dst<u8>>(&mut self, bit: u8, dst: D) -> RWResult<()> {
+        let value = dst.try_read(self)?;
 
         let result = (value >> bit) & 1 == 0;
 
         Flag::Z.write(self, result);
         Flag::N.write(self, false);
         Flag::H.write(self, true);
+
+        Ok(())
     }
 
-    fn set<D: Src<u8> + Dst<u8>>(&mut self, bit: u8, dst: D) {
-        let value = dst.read(self);
+    fn set<D: Src<u8> + Dst<u8>>(&mut self, bit: u8, dst: D) -> RWResult<()> {
+        let value = dst.try_read(self)?;
         let mask = 1 << bit;
 
-        dst.write(self, value | mask);
+        dst.try_write(self, value | mask)
     }
 
-    fn res<D: Src<u8> + Dst<u8>>(&mut self, bit: u8, dst: D) {
-        let value = dst.read(self);
+    fn res<D: Src<u8> + Dst<u8>>(&mut self, bit: u8, dst: D) -> RWResult<()> {
+        let value = dst.try_read(self)?;
         let mask = !(1 << bit);
 
-        dst.write(self, value & mask);
+        dst.try_write(self, value & mask)
     }
 
     /// Executes an instruction, and returns a potentially new
     /// address for the PC register. If the return value is `None`,
     /// then the new PC value is set to the next instruction, based
     /// on the instruction size in bytes.
-    fn execute_opcode(&mut self, opcode: Opcode) -> Option<u16> {
+    fn execute_opcode(&mut self, opcode: Opcode) -> Result<Option<u16>, RuntimeError> {
         let mut maybe_pc = None;
         let next_pc = Reg16::PC.read(self) + opcode.size() as u16;
         match opcode {
-            Opcode::NOP => {}
+            Opcode::NOP => Ok(()),
             Opcode::STOP => unimplemented!(),
             Opcode::HALT => unimplemented!(),
             Opcode::DI => unimplemented!(),
             Opcode::EI => unimplemented!(),
 
-            Opcode::JR(c, o) => {
-                maybe_pc = self
-                    .jump_relative(c, o)
-                    .map(|o| ((next_pc as i32) + (o as i32)) as u16);
-            }
-            Opcode::RET(c) => {
-                maybe_pc = self.ret(c);
-            }
-            Opcode::JP(c, a) => {
-                maybe_pc = self.jump(c, a);
-            }
-            Opcode::CALL(c, a) => {
-                maybe_pc = self.call(c, a);
-            }
+            Opcode::JR(c, o) => self
+                .jump_relative(c, o)
+                .map(|o| maybe_pc = o.map(|v| ((next_pc as i32) + (v as i32)) as u16)),
+            Opcode::RET(c) => self.ret(c).map(|v| maybe_pc = v),
+            Opcode::JP(c, a) => self.jump(c, a).map(|v| maybe_pc = v),
+            Opcode::CALL(c, a) => self.call(c, a).map(|v| maybe_pc = v),
             Opcode::RETI => unimplemented!(),
-            Opcode::JPHL => {
-                maybe_pc = self.jump(None, Reg16::HL);
-            }
+            Opcode::JPHL => self.jump(None, Reg16::HL).map(|v| maybe_pc = v),
             Opcode::RST(_) => unimplemented!(),
 
             Opcode::INC16(r) => self.increment_16(r),
@@ -679,23 +742,11 @@ impl CPU {
             Opcode::LDSPHL => self.load_16(Reg16::SP, Reg16::HL),
 
             Opcode::LDARegMem(dst, src) => self.load(dst, src),
-            Opcode::LDHLMemIncA(dst, src) => {
-                self.load(dst, src);
-                Reg16::HL.add(self, 1);
-            }
-            Opcode::LDHLMemDecA(dst, src) => {
-                self.load(dst, src);
-                Reg16::HL.sub(self, 1);
-            }
+            Opcode::LDHLMemIncA(dst, src) => self.load(dst, src).and(Reg16::HL.try_add(self, 1)),
+            Opcode::LDHLMemDecA(dst, src) => self.load(dst, src).and(Reg16::HL.try_sub(self, 1)),
             Opcode::LDRegMemA(dst, src) => self.load(dst, src),
-            Opcode::LDAHLMemInc(dst, src) => {
-                self.load(dst, src);
-                Reg16::HL.add(self, 1);
-            }
-            Opcode::LDAHLMemDec(dst, src) => {
-                self.load(dst, src);
-                Reg16::HL.sub(self, 1);
-            }
+            Opcode::LDAHLMemInc(dst, src) => self.load(dst, src).and(Reg16::HL.try_add(self, 1)),
+            Opcode::LDAHLMemDec(dst, src) => self.load(dst, src).and(Reg16::HL.try_sub(self, 1)),
             Opcode::LDRegImm(dst, src) => self.load(dst, src),
             Opcode::LDHLMemImm(dst, src) => self.load(dst, src),
             Opcode::LD(dst, src) => self.load(dst, src),
@@ -717,17 +768,20 @@ impl CPU {
                 Flag::N.write(self, false);
                 Flag::H.write(self, false);
                 Flag::C.write(self, true);
+                Ok(())
             }
             Opcode::CPL => {
                 let a = Reg8::A.read(self);
                 Reg8::A.write(self, !a);
                 Flag::N.write(self, true);
                 Flag::H.write(self, true);
+                Ok(())
             }
             Opcode::CCF => {
                 Flag::N.write(self, false);
                 Flag::H.write(self, false);
                 Flag::C.write(self, !Flag::C.read(self));
+                Ok(())
             }
             Opcode::ADD(dst, src) => self.add(dst, src),
             Opcode::ADDHLMem(dst, src) => self.add(dst, src),
@@ -783,8 +837,9 @@ impl CPU {
             Opcode::RESMem(b, r) => self.res(b, r),
             Opcode::SET(b, r) => self.set(b, r),
             Opcode::SETMem(b, r) => self.set(b, r),
-        };
-        maybe_pc
+        }
+        .map(|_| maybe_pc)
+        .map_err(|e| RuntimeError(RuntimeErrorKind::ReadWriteError(e)))
     }
 
     /// Returns an iterator over the instructions, without

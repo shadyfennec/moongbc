@@ -5,5 +5,5 @@ pub mod opcode;
 pub mod ram;
 pub mod register;
 
-mod util;
+pub mod util;
 pub use util::*;

@@ -46,41 +46,27 @@ impl BitField {
 }
 
 #[derive(Debug)]
-pub struct ReadError(pub ReadErrorKind);
+pub struct ReadWriteError(pub ReadWriteErrorKind);
 
 #[derive(Debug)]
-pub enum ReadErrorKind {
+pub enum ReadWriteErrorKind {
     MemoryError(MemoryError),
 }
 
-impl fmt::Display for ReadError {
+impl fmt::Display for ReadWriteError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.0 {
-            ReadErrorKind::MemoryError(e) => write!(f, "Memory error: {}", e),
+            ReadWriteErrorKind::MemoryError(e) => write!(f, "Memory error: {}", e),
         }
     }
 }
 
-#[derive(Debug)]
-pub struct WriteError(pub WriteErrorKind);
-
-#[derive(Debug)]
-pub enum WriteErrorKind {
-    MemoryError(MemoryError),
-}
-
-impl fmt::Display for WriteError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match &self.0 {
-            WriteErrorKind::MemoryError(e) => write!(f, "Memory error: {}", e),
-        }
-    }
-}
+pub type RWResult<T> = Result<T, ReadWriteError>;
 
 /// Represents something that holds data that can be read.
 pub trait Src<T> {
     /// Tries to read a value, returning it if it's possible, or `None` otherwise.
-    fn try_read(&self, cpu: &CPU) -> Result<T, ReadError>;
+    fn try_read(&self, cpu: &CPU) -> RWResult<T>;
 
     /// Reads a value from the source.
     /// ### Panics
@@ -92,7 +78,7 @@ pub trait Src<T> {
 
 /// Represents something that holds data that can be written to.
 pub trait Dst<T> {
-    fn try_write(&self, cpu: &mut CPU, value: T) -> Result<(), WriteError>;
+    fn try_write(&self, cpu: &mut CPU, value: T) -> RWResult<()>;
     /// Writes a value to the destination.
     fn write(&self, cpu: &mut CPU, value: T) {
         self.try_write(cpu, value).unwrap()
@@ -107,6 +93,15 @@ pub trait Dst<T> {
         self.write(cpu, self.read(cpu) + inc)
     }
 
+    /// Adds something to the destination, and fails if the write was unsuccessful.
+    fn try_add(&self, cpu: &mut CPU, inc: T) -> RWResult<()>
+    where
+        Self: Src<T>,
+        T: std::ops::Add<Output = T>,
+    {
+        self.try_write(cpu, self.read(cpu) + inc)
+    }
+
     /// Subtracts something from the destination.
     fn sub(&self, cpu: &mut CPU, dec: T)
     where
@@ -115,16 +110,25 @@ pub trait Dst<T> {
     {
         self.write(cpu, self.read(cpu) - dec)
     }
+
+    /// Subtracts something from the destination, and fails if the write was unsuccessful.
+    fn try_sub(&self, cpu: &mut CPU, dec: T) -> RWResult<()>
+    where
+        Self: Src<T>,
+        T: std::ops::Sub<Output = T>,
+    {
+        self.try_write(cpu, self.read(cpu) - dec)
+    }
 }
 
 impl Src<u8> for u8 {
-    fn try_read(&self, _: &CPU) -> Result<u8, ReadError> {
+    fn try_read(&self, _: &CPU) -> RWResult<u8> {
         Ok(*self)
     }
 }
 
 impl Src<u16> for u16 {
-    fn try_read(&self, _: &CPU) -> Result<u16, ReadError> {
+    fn try_read(&self, _: &CPU) -> RWResult<u16> {
         Ok(*self)
     }
 }

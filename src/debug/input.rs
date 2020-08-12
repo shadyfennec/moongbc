@@ -107,7 +107,11 @@ impl Widget for Input {
         let paragraph = Paragraph::new(text.iter())
             .block(
                 Block::default()
-                    .title_style(self.title_style)
+                    .title_style(if self.error {
+                        Style::default().fg(Color::Red)
+                    } else {
+                        self.title_style
+                    })
                     .title(title.as_str())
                     .borders(Borders::NONE),
             )

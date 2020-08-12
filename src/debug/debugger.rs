@@ -97,7 +97,21 @@ impl Debugger {
 
         loop {
             if self.running {
-                self.running = !self.cpu.step_check();
+                self.running = match self.cpu.step_check() {
+                    Ok(r) => {
+                        if r {
+                            self.refresh();
+                            false
+                        } else {
+                            true
+                        }
+                    }
+                    Err(e) => {
+                        self.widgets.display_error(format!("{}", e));
+                        self.refresh();
+                        false
+                    }
+                }
             } else {
                 self.draw(&mut terminal)?;
             }
@@ -120,7 +134,11 @@ impl Debugger {
                             self.running = true;
                         }
                         KeyAction::Step => {
-                            self.cpu.step();
+                            // TODO: handle error
+                            if let Err(e) = self.cpu.step() {
+                                self.widgets.display_error(format!("{}", e));
+                                self.refresh();
+                            }
                             self.refresh();
                         }
                         KeyAction::Quit => {
@@ -135,8 +153,10 @@ impl Debugger {
                         }
                     },
                     Event::Tick => {
-                        self.refresh();
-                        self.draw(&mut terminal)?;
+                        if self.running {
+                            self.refresh();
+                            self.draw(&mut terminal)?;
+                        }
                     }
                 }
             }

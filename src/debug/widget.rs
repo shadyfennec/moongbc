@@ -183,6 +183,11 @@ impl WidgetList {
         self.widgets.iter().position(|(k, _)| *k == *kind)
     }
 
+    pub fn display_error<S: Into<String>>(&mut self, message: S) {
+        self.input.set_error(true);
+        self.input.set_error_title(Some(message.into()));
+    }
+
     fn event_to_key(&self, event: Event) -> KeyEvent {
         match event {
             Event::Key(ke) => ke,
