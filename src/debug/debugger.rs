@@ -66,6 +66,9 @@ impl Debugger {
         let (tx, rx) = mpsc::channel();
         let tick_rate = Duration::from_millis(16);
 
+        // Used to fix input on linux/unix platforms
+        crossterm::terminal::enable_raw_mode().unwrap();
+
         thread::spawn(move || {
             let mut last_tick = Instant::now();
             loop {
