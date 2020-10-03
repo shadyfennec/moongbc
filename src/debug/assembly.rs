@@ -72,13 +72,17 @@ impl Widget for Assembly {
                     let is_pc = instruction_window.pc.map(|a| a == i).unwrap_or(false);
 
                     let (cursor, bg, fg) = match (is_cursor, is_pc) {
-                        (false, false) => (' ', Color::Black, Color::White),
-                        (false, true) => ('>', Color::Black, Color::Green),
-                        (true, false) => (' ', Color::White, Color::Black),
-                        (true, true) => ('>', Color::White, Color::Green),
+                        (false, false) => (' ', None, Color::White),
+                        (false, true) => ('>', None, Color::Red),
+                        (true, false) => (' ', Some(Color::White), Color::Black),
+                        (true, true) => ('>', Some(Color::White), Color::Red),
                     };
 
-                    let style = Style::default().fg(fg).bg(bg);
+                    let style = if let Some(bg) = bg {
+                        Style::default().fg(fg).bg(bg)
+                    } else {
+                        Style::default().fg(fg)
+                    };
 
                     let instr = match o.try_display(cpu, Some(*a)) {
                         Ok(s) => s,

@@ -370,9 +370,11 @@ impl WidgetList {
             )
             .split(f.size());
 
+        // The Constraint::Max(58) is the maximum size needed for the memory viewer;
+        // this way, we don't use too much space for it.
         let chunks = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)].as_ref())
+            .constraints([Constraint::Max(58), Constraint::Percentage(50)].as_ref())
             .split(top_bottom[0]);
 
         let right_chunks = Layout::default()
