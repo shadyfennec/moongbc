@@ -74,10 +74,45 @@ impl fmt::Display for WatchKind {
     }
 }
 
+pub enum InterruptKind {
+    VBlank,
+    LCD,
+    Timer,
+    SerialIO,
+    Joypad,
+}
+
+impl InterruptKind {
+    pub fn check(&self, cpu: &CPU) -> bool {
+        let mask = match self {
+            InterruptKind::VBlank => 0x1,
+            InterruptKind::LCD => 0x2,
+            InterruptKind::Timer => 0x4,
+            InterruptKind::SerialIO => 0x8,
+            InterruptKind::Joypad => 0x10,
+        };
+
+        Mem(0xFF0F).read(cpu) & mask != 0
+    }
+}
+
+impl fmt::Display for InterruptKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            InterruptKind::VBlank => write!(f, "Watching VBlank interrupt"),
+            InterruptKind::LCD => write!(f, "Watching LCD interrupt"),
+            InterruptKind::Timer => write!(f, "Watching Timer interrupt"),
+            InterruptKind::SerialIO => write!(f, "Watching Serial I/O interrupt"),
+            InterruptKind::Joypad => write!(f, "Watching Joypad interrupt"),
+        }
+    }
+}
+
 pub enum Breakpoint {
     Address(u16),
     Opcode(u8),
     Watch(WatchKind),
+    Interrupt(InterruptKind),
 }
 
 impl Breakpoint {
@@ -86,6 +121,7 @@ impl Breakpoint {
             Breakpoint::Address(addr) => Reg16::PC.read(cpu) == *addr,
             Breakpoint::Opcode(op) => Mem(Reg16::PC).read(cpu) == *op,
             Breakpoint::Watch(w) => w.check(cpu),
+            Breakpoint::Interrupt(i) => i.check(cpu),
         }
     }
 
@@ -102,6 +138,7 @@ impl fmt::Display for Breakpoint {
             Breakpoint::Address(addr) => write!(f, "Break at address 0x{:04x}", addr),
             Breakpoint::Opcode(op) => write!(f, "Break at opcode 0x{:02x}", op),
             Breakpoint::Watch(w) => write!(f, "{}", w.to_string()),
+            Breakpoint::Interrupt(i) => write!(f, "{}", i),
         }
     }
 }
@@ -114,6 +151,7 @@ pub struct CPU {
     pub(crate) registers: Registers,
     pub(crate) memory_map: MemoryMap,
     pub(crate) breakpoints: Vec<Breakpoint>,
+    pub(crate) cycles: usize,
 }
 
 impl CPU {
@@ -123,6 +161,7 @@ impl CPU {
             registers: Registers::new(),
             memory_map: MemoryMap::new(),
             breakpoints: vec![],
+            cycles: 0,
         }
     }
 
@@ -141,7 +180,10 @@ impl CPU {
 
         let mut result = Ok(());
         let new_pc = match self.execute_opcode(instruction) {
-            Ok(o) => o.unwrap_or_else(|| Reg16::PC.read(self).wrapping_add(size as u16)),
+            Ok((option, cycles)) => {
+                self.cycles += cycles;
+                option.unwrap_or_else(|| Reg16::PC.read(self).wrapping_add(size as u16))
+            }
             Err(e) => {
                 result = Err(e);
                 Reg16::PC.read(self)
@@ -709,9 +751,12 @@ impl CPU {
     /// address for the PC register. If the return value is `None`,
     /// then the new PC value is set to the next instruction, based
     /// on the instruction size in bytes.
-    fn execute_opcode(&mut self, opcode: Opcode) -> Result<Option<u16>, RuntimeError> {
+    fn execute_opcode(&mut self, opcode: Opcode) -> Result<(Option<u16>, usize), RuntimeError> {
         let mut maybe_pc = None;
         let next_pc = Reg16::PC.read(self) + opcode.size() as u16;
+        let (cycles, cycles_failure) = opcode.cycles();
+        let mut actual_cycles = cycles;
+
         match opcode {
             Opcode::NOP => Ok(()),
             Opcode::STOP => unimplemented!(),
@@ -719,12 +764,38 @@ impl CPU {
             Opcode::DI => unimplemented!(),
             Opcode::EI => unimplemented!(),
 
-            Opcode::JR(c, o) => self
-                .jump_relative(c, o)
-                .map(|o| maybe_pc = o.map(|v| ((next_pc as i32) + (v as i32)) as u16)),
-            Opcode::RET(c) => self.ret(c).map(|v| maybe_pc = v),
-            Opcode::JP(c, a) => self.jump(c, a).map(|v| maybe_pc = v),
-            Opcode::CALL(c, a) => self.call(c, a).map(|v| maybe_pc = v),
+            Opcode::JR(c, o) => self.jump_relative(c, o).map(|o| {
+                maybe_pc = o.map(|v| ((next_pc as i32) + (v as i32)) as u16);
+                if let Some(c) = c {
+                    if !c.read(self) {
+                        actual_cycles = cycles_failure.unwrap();
+                    }
+                }
+            }),
+            Opcode::RET(c) => self.ret(c).map(|v| {
+                maybe_pc = v;
+                if let Some(c) = c {
+                    if !c.read(self) {
+                        actual_cycles = cycles_failure.unwrap();
+                    }
+                }
+            }),
+            Opcode::JP(c, a) => self.jump(c, a).map(|v| {
+                maybe_pc = v;
+                if let Some(c) = c {
+                    if !c.read(self) {
+                        actual_cycles = cycles_failure.unwrap();
+                    }
+                }
+            }),
+            Opcode::CALL(c, a) => self.call(c, a).map(|v| {
+                maybe_pc = v;
+                if let Some(c) = c {
+                    if !c.read(self) {
+                        actual_cycles = cycles_failure.unwrap();
+                    }
+                }
+            }),
             Opcode::RETI => unimplemented!(),
             Opcode::JPHL => self.jump(None, Reg16::HL).map(|v| maybe_pc = v),
             Opcode::RST(_) => unimplemented!(),
@@ -838,7 +909,7 @@ impl CPU {
             Opcode::SET(b, r) => self.set(b, r),
             Opcode::SETMem(b, r) => self.set(b, r),
         }
-        .map(|_| maybe_pc)
+        .map(|_| (maybe_pc, actual_cycles))
         .map_err(|e| RuntimeError(RuntimeErrorKind::ReadWriteError(e)))
     }
 

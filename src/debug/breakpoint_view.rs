@@ -1,6 +1,6 @@
 use super::widget::WidgetKind;
 use crate::{
-    cpu::{Breakpoint, WatchKind, Watcher, CPU},
+    cpu::{Breakpoint, InterruptKind, WatchKind, Watcher, CPU},
     debug::{util::FromHexString, widget::Widget},
     memory_map::Mem,
     register::{Flag, Reg16, Reg8},
@@ -191,6 +191,7 @@ enum Command {
     Address,
     Opcode,
     Watch,
+    Interrupt,
 }
 
 /// Represents the widget responsible for displaying the different
@@ -278,6 +279,10 @@ impl Widget for BreakpointView {
                 self.command = Some(Command::Watch);
                 Some((WidgetKind::Breakpoints, "Watch:".to_string()))
             }
+            KeyCode::Char('i') => {
+                self.command = Some(Command::Interrupt);
+                Some((WidgetKind::Breakpoints, "Watch interrupt:".to_string()))
+            }
             KeyCode::Char('d') => {
                 if let Some(idx) = &self.cursor {
                     cpu.breakpoints.remove(*idx);
@@ -346,6 +351,32 @@ impl Widget for BreakpointView {
                             }
                         })
                         .next()
+                        .unwrap_or(Err(None))
+                }
+                Command::Interrupt => {
+                    let kinds: Vec<(&'static str, InterruptKind)> = vec![
+                        ("vblank", InterruptKind::VBlank),
+                        ("lcd", InterruptKind::LCD),
+                        ("timer", InterruptKind::Timer),
+                        ("serial", InterruptKind::SerialIO),
+                        ("joypad", InterruptKind::Joypad),
+                    ];
+
+                    kinds
+                        .into_iter()
+                        .filter_map(|(k, i)| {
+                            let input = input.to_lowercase();
+                            if k.starts_with(input.as_str()) {
+                                Some(i)
+                            } else {
+                                None
+                            }
+                        })
+                        .next()
+                        .map(|i| {
+                            cpu.add_breakpoint(Breakpoint::Interrupt(i));
+                            Ok(())
+                        })
                         .unwrap_or(Err(None))
                 }
             }
