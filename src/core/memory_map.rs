@@ -97,10 +97,10 @@ pub struct IOMem<S: Src<u8>>(pub S);
 
 impl<S: Src<u8>> Src<u8> for IOMem<S> {
     fn try_read(&self, cpu: &CPU) -> Result<u8, ReadWriteError> {
-        let offset = (self.0.read(cpu) as i8) as i32;
-        let base = 0xFF00i32;
+        let offset = self.0.read(cpu);
+        let base = 0xFF00u16;
 
-        let addr = (base + offset) as u16;
+        let addr = base + offset as u16;
         cpu.memory_map
             .read(addr)
             .map_err(|e| ReadWriteError(ReadWriteErrorKind::MemoryError(e)))
@@ -109,10 +109,11 @@ impl<S: Src<u8>> Src<u8> for IOMem<S> {
 
 impl<S: Src<u8>> Dst<u8> for IOMem<S> {
     fn try_write(&self, cpu: &mut CPU, value: u8) -> Result<(), ReadWriteError> {
-        let offset = (self.0.read(cpu) as i8) as i32;
-        let base = 0xFF00i32;
+        let offset = self.0.read(cpu);
+        let base = 0xFF00u16;
 
-        let addr = (base + offset) as u16;
+        let addr = base + offset as u16;
+
         cpu.memory_map
             .write(addr, value)
             .map_err(|e| ReadWriteError(ReadWriteErrorKind::MemoryError(e)))
