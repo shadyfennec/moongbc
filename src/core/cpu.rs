@@ -23,15 +23,20 @@ impl fmt::Display for RuntimeError {
     }
 }
 
+#[derive(Clone)]
 pub struct Watcher<S: Src<T> + fmt::Display, T> {
     src: S,
     original: T,
 }
 
-impl<S: Src<T> + fmt::Display, T: PartialEq> Watcher<S, T> {
+impl<S: Src<T> + fmt::Display, T: PartialEq + Copy> Watcher<S, T> {
     pub fn new(src: S, cpu: &CPU) -> Watcher<S, T> {
         let original = src.read(cpu);
         Watcher { src, original }
+    }
+
+    pub fn refresh(&mut self, cpu: &CPU) {
+        self.original = self.src.read(cpu);
     }
 
     pub fn check(&self, cpu: &CPU) -> bool {
@@ -45,6 +50,7 @@ impl<S: Src<T> + fmt::Display, T: PartialEq> fmt::Display for Watcher<S, T> {
     }
 }
 
+#[derive(Clone)]
 pub enum WatchKind {
     Reg8(Watcher<Reg8, u8>),
     Reg16(Watcher<Reg16, u16>),
@@ -61,6 +67,15 @@ impl WatchKind {
             WatchKind::Flag(w) => w.check(cpu),
         }
     }
+
+    pub fn refresh(&mut self, cpu: &CPU) {
+        match self {
+            WatchKind::Reg8(w) => w.refresh(cpu),
+            WatchKind::Reg16(w) => w.refresh(cpu),
+            WatchKind::Mem(w) => w.refresh(cpu),
+            WatchKind::Flag(w) => w.refresh(cpu),
+        }
+    }
 }
 
 impl fmt::Display for WatchKind {
@@ -74,6 +89,7 @@ impl fmt::Display for WatchKind {
     }
 }
 
+#[derive(Clone)]
 pub enum InterruptKind {
     VBlank,
     LCD,
@@ -122,6 +138,7 @@ impl fmt::Display for InterruptKind {
     }
 }
 
+#[derive(Clone)]
 pub enum Breakpoint {
     Address(u16),
     Opcode(u8),
@@ -233,13 +250,22 @@ impl CPU {
         };
 
         Reg16::PC.write(self, new_pc);
+
         result
     }
 
     /// Executes one step of instruction, and returns true if a breakpoint is triggered
     pub fn step_check(&mut self) -> Result<bool, RuntimeError> {
         self.step()?;
-        Ok(self.check_breakpoints())
+        let results = self.check_breakpoints();
+        let mut breakpoints = self.breakpoints.clone();
+        breakpoints.iter_mut().for_each(|b| {
+            if let Breakpoint::Watch(w) = b {
+                w.refresh(self);
+            }
+        });
+        self.breakpoints = breakpoints;
+        Ok(results)
     }
 
     /// Runs until an error occurs.

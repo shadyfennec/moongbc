@@ -93,8 +93,8 @@ impl WRAM {
     }
 
     pub fn set_bank(&mut self, bank: usize) {
-        assert!((1..8).contains(&bank));
-        self.bank = bank;
+        assert!((0..8).contains(&bank));
+        self.bank = bank.max(1);
     }
 }
 

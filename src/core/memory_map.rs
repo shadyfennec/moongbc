@@ -219,17 +219,17 @@ impl MemoryMap {
         match addr {
             0xFF70 => {
                 self.wram.set_bank((value & 7) as usize);
-                Ok(())
             }
-            _ => self.io_registers.write(addr, value),
+            _ => {}
         }
+        self.io_registers.write(addr, value)
     }
 }
 
 impl MemoryRegion for MemoryMap {
     fn read(&self, addr: u16) -> Result<u8, MemoryError> {
         match addr {
-            0x0000..=0x7FFF | 0xA000..=0xBFFF => {
+            0x0000..=0x00FF | 0x0200..=0x7FFF | 0xA000..=0xBFFF => {
                 if self.boot_flag && addr < self.bootstrap.len() as u16 {
                     self.bootstrap
                         .read(addr)
@@ -242,6 +242,12 @@ impl MemoryRegion for MemoryMap {
                         .map_err(|e| MemoryError(MemoryErrorKind::MBCError(e)))
                 }
             }
+            0x0100..=0x01FF => self
+                .cartridge
+                .as_ref()
+                .unwrap()
+                .read(addr)
+                .map_err(|e| MemoryError(MemoryErrorKind::MBCError(e))),
             0x8000..=0x9FFF => self.vram.read(addr),
             0xC000..=0xDFFF => self.wram.read(addr),
             0xE000..=0xFDFF => self.wram.read(addr - 0x2000),

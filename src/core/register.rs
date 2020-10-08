@@ -163,6 +163,7 @@ impl fmt::Display for Reg16 {
 }
 
 /// The different flags of the F register.
+#[derive(Clone)]
 pub enum Flag {
     Z,
     N,
