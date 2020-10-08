@@ -1,6 +1,8 @@
 use crate::cartridge::Cartridge;
 use crate::cpu::CPU;
-use crate::ram::{MemoryError, MemoryErrorKind, MemoryRegion, UnusedRegion, HRAM, OAM, VRAM, WRAM};
+use crate::ram::{
+    IORegisters, MemoryError, MemoryErrorKind, MemoryRegion, UnusedRegion, HRAM, OAM, VRAM, WRAM,
+};
 use crate::{register::Reg16, BitField, Dst, ReadWriteError, ReadWriteErrorKind, Src};
 
 use std::fmt;
@@ -158,6 +160,7 @@ pub struct MemoryMap {
     oam: OAM,
     hram: HRAM,
     unused_region: UnusedRegion,
+    io_registers: IORegisters,
     interrupt_enable: BitField,
 }
 
@@ -174,6 +177,7 @@ impl MemoryMap {
             oam: OAM::new(),
             hram: HRAM::new(),
             unused_region: UnusedRegion::new(),
+            io_registers: IORegisters::new(),
             interrupt_enable: BitField::from(0),
         }
     }
@@ -206,7 +210,7 @@ impl MemoryMap {
 
     fn read_register(&self, addr: u16) -> Result<u8, MemoryError> {
         match addr {
-            _ => Ok(0),
+            _ => self.io_registers.read(addr),
         }
     }
 
@@ -216,7 +220,7 @@ impl MemoryMap {
                 self.wram.set_bank((value & 7) as usize);
                 Ok(())
             }
-            _ => Ok(()),
+            _ => self.io_registers.write(addr, value),
         }
     }
 }

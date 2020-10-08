@@ -2,7 +2,7 @@ use crate::cartridge::Cartridge;
 use crate::memory_map::{Mem, MemoryMap};
 use crate::opcode::{Condition, Decoder, Opcode};
 use crate::register::{Flag, Imm16, Reg16, Reg8, Registers};
-use crate::{Dst, RWResult, ReadWriteError, Src};
+use crate::{BitField, Dst, RWResult, ReadWriteError, Src};
 
 use std::fmt;
 use std::path::Path;
@@ -83,16 +83,30 @@ pub enum InterruptKind {
 }
 
 impl InterruptKind {
-    pub fn check(&self, cpu: &CPU) -> bool {
-        let mask = match self {
+    pub fn mask(&self) -> u8 {
+        match self {
             InterruptKind::VBlank => 0x1,
             InterruptKind::LCD => 0x2,
             InterruptKind::Timer => 0x4,
             InterruptKind::SerialIO => 0x8,
             InterruptKind::Joypad => 0x10,
-        };
+        }
+    }
+
+    pub fn check(&self, cpu: &CPU) -> bool {
+        let mask = self.mask();
 
         Mem(0xFF0F).read(cpu) & mask != 0
+    }
+
+    pub fn bit(&self) -> u8 {
+        match self {
+            InterruptKind::VBlank => 0,
+            InterruptKind::LCD => 1,
+            InterruptKind::Timer => 2,
+            InterruptKind::SerialIO => 3,
+            InterruptKind::Joypad => 4,
+        }
     }
 }
 
@@ -152,6 +166,7 @@ pub struct CPU {
     pub(crate) memory_map: MemoryMap,
     pub(crate) breakpoints: Vec<Breakpoint>,
     pub(crate) cycles: usize,
+    pub(crate) interrupt_enable: bool,
 }
 
 impl CPU {
@@ -162,6 +177,7 @@ impl CPU {
             memory_map: MemoryMap::new(),
             breakpoints: vec![],
             cycles: 0,
+            interrupt_enable: false,
         }
     }
 
@@ -172,9 +188,35 @@ impl CPU {
             .set_cartridge(Cartridge::load(path).unwrap())
     }
 
+    fn set_interrupt(&mut self, interrupt: InterruptKind) {
+        let current = Mem(0xFF0F).read(self);
+        let mut bf = BitField::from(current);
+        bf.set(interrupt.bit(), true);
+        let new: u8 = bf.into();
+        Mem(0xFF0F).write(self, new);
+    }
+
+    fn is_interrupt_enabled(&self, interrupt: InterruptKind) -> bool {
+        let ie = Mem(0xFFFF).read(self);
+        ie & interrupt.mask() == 0
+    }
+
     /// Executes the current instruction, modifying registers and memory
     /// accordingly, and advances towards the next instruction.
     pub fn step(&mut self) -> Result<(), RuntimeError> {
+        if self.cycles >= 17555 {
+            // VBlank interrupt time
+            self.cycles = 0;
+            self.set_interrupt(InterruptKind::VBlank);
+
+            if self.interrupt_enable && self.is_interrupt_enabled(InterruptKind::VBlank) {
+                self.interrupt_enable = false;
+
+                self.push(Reg16::PC).unwrap();
+                Reg16::PC.write(self, 0x40);
+            }
+        }
+
         let instruction = Decoder::decode(self);
         let size = instruction.size();
 
@@ -761,8 +803,14 @@ impl CPU {
             Opcode::NOP => Ok(()),
             Opcode::STOP => unimplemented!(),
             Opcode::HALT => unimplemented!(),
-            Opcode::DI => unimplemented!(),
-            Opcode::EI => unimplemented!(),
+            Opcode::DI => {
+                self.interrupt_enable = false;
+                Ok(())
+            }
+            Opcode::EI => {
+                self.interrupt_enable = true;
+                Ok(())
+            }
 
             Opcode::JR(c, o) => self.jump_relative(c, o).map(|o| {
                 maybe_pc = o.map(|v| ((next_pc as i32) + (v as i32)) as u16);

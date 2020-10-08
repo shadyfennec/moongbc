@@ -220,3 +220,34 @@ impl MemoryRegion for UnusedRegion {
         }
     }
 }
+
+#[derive(Default)]
+pub struct IORegisters {
+    data: Vec<u8>,
+}
+
+impl IORegisters {
+    pub fn new() -> Self {
+        Self {
+            data: repeat(0).take(0x80).collect(),
+        }
+    }
+}
+
+impl MemoryRegion for IORegisters {
+    fn read(&self, addr: u16) -> Result<u8, MemoryError> {
+        self.data
+            .get(addr as usize - 0xFF00)
+            .copied()
+            .ok_or(MemoryError(MemoryErrorKind::OutOfBounds))
+    }
+
+    fn write(&mut self, addr: u16, value: u8) -> Result<(), MemoryError> {
+        if let Some(loc) = self.data.get_mut(addr as usize - 0xFF00) {
+            *loc = value;
+            Ok(())
+        } else {
+            Err(MemoryError(MemoryErrorKind::OutOfBounds))
+        }
+    }
+}
