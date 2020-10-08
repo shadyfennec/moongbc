@@ -152,10 +152,11 @@ impl Widget for Assembly {
                         Opcode::JR(_, _) => {
                             let offset = Mem(self.pos + 1).read(cpu) as i8;
                             self.pos = if offset < 0 {
-                                self.pos.saturating_sub((-offset) as u16)
+                                self.pos.saturating_sub(((-offset) - 1) as u16)
                             } else {
-                                self.pos.saturating_add(offset as u16)
+                                self.pos.saturating_add((offset + 1) as u16)
                             };
+                            println!("0x{:02x}", self.pos);
                         }
                         _ => {}
                     }
