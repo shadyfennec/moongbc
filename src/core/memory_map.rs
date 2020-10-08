@@ -1,8 +1,6 @@
 use crate::cartridge::Cartridge;
 use crate::cpu::CPU;
-use crate::ram::{
-    IORegisters, MemoryError, MemoryErrorKind, MemoryRegion, UnusedRegion, HRAM, OAM, VRAM, WRAM,
-};
+use crate::ram::{MemoryError, MemoryErrorKind, MemoryRegion, UnusedRegion, HRAM, OAM, VRAM, WRAM};
 use crate::{register::Reg16, BitField, Dst, ReadWriteError, ReadWriteErrorKind, Src};
 
 use std::fmt;
@@ -160,7 +158,6 @@ pub struct MemoryMap {
     oam: OAM,
     hram: HRAM,
     unused_region: UnusedRegion,
-    io_registers: IORegisters,
     interrupt_enable: BitField,
 }
 
@@ -177,7 +174,6 @@ impl MemoryMap {
             oam: OAM::new(),
             hram: HRAM::new(),
             unused_region: UnusedRegion::new(),
-            io_registers: IORegisters::new(),
             interrupt_enable: BitField::from(0),
         }
     }
@@ -208,19 +204,19 @@ impl MemoryMap {
         }
     }
 
-    fn read_register(&self, addr: u16) -> Option<u8> {
+    fn read_register(&self, addr: u16) -> Result<u8, MemoryError> {
         match addr {
-            _ => None,
+            _ => Ok(0),
         }
     }
 
-    fn write_register(&mut self, addr: u16, value: u8) -> Option<u8> {
+    fn write_register(&mut self, addr: u16, value: u8) -> Result<(), MemoryError> {
         match addr {
             0xFF70 => {
                 self.wram.set_bank((value & 7) as usize);
-                Some(value & 7)
+                Ok(())
             }
-            _ => None,
+            _ => Ok(()),
         }
     }
 }
@@ -246,10 +242,7 @@ impl MemoryRegion for MemoryMap {
             0xE000..=0xFDFF => self.wram.read(addr - 0x2000),
             0xFE00..=0xFE9F => self.oam.read(addr),
             0xFEA0..=0xFEFF => self.unused_region.read(addr),
-            0xFF00..=0xFF7F => match self.read_register(addr) {
-                Some(v) => Ok(v),
-                None => self.io_registers.read(addr),
-            },
+            0xFF00..=0xFF7F => self.read_register(addr),
             0xFF80..=0xFFFE => self.hram.read(addr),
             0xFFFF => Ok(self.interrupt_enable.into()),
         }
@@ -268,10 +261,7 @@ impl MemoryRegion for MemoryMap {
             0xE000..=0xFDFF => self.wram.write(addr - 0x2000, value),
             0xFE00..=0xFE9F => self.oam.write(addr, value),
             0xFEA0..=0xFEFF => self.unused_region.write(addr, value),
-            0xFF00..=0xFF7F => {
-                let value = self.write_register(addr, value).unwrap_or(value);
-                self.io_registers.write(addr, value)
-            }
+            0xFF00..=0xFF7F => self.write_register(addr, value),
             0xFF80..=0xFFFE => self.hram.write(addr, value),
             0xFFFF => {
                 self.interrupt_enable.write(value);

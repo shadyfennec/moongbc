@@ -559,150 +559,133 @@ impl Opcode {
 
     pub fn try_display(&self, cpu: &CPU, pc: Option<u16>) -> Result<String, String> {
         let pc = pc.unwrap_or_else(|| Reg16::PC.read(cpu));
-        let unknown = || String::from("??");
 
-        Mem(pc + 1)
-            .try_read(cpu)
-            .ok()
-            .ok_or_else(unknown)
-            .map(|i| i as i8)
-            .and_then(|signed_imm8| {
-                Mem(pc + 1)
-                    .try_read(cpu)
-                    .ok()
-                    .ok_or_else(unknown)
-                    .and_then(|imm8| {
-                        Mem16(pc + 1)
-                            .try_read(cpu)
-                            .ok()
-                            .ok_or_else(unknown)
-                            .map(|imm16| match self {
-                                Opcode::NOP => String::from("NOP"),
-                                Opcode::STOP => String::from("STOP 0"),
-                                Opcode::HALT => String::from("HALT"),
-                                Opcode::DI => String::from("DI"),
-                                Opcode::EI => String::from("EI"),
+        let signed_imm8 = Mem(pc + 1).try_read(cpu).map(|i| i as i8);
+        let imm8 = Mem(pc + 1).try_read(cpu);
+        let imm16 = Mem16(pc + 1).try_read(cpu);
 
-                                Opcode::JR(c, _) => match c {
-                                    Some(c) => format!("JR {}, %{:+}", c, signed_imm8),
-                                    None => format!("JR %{:+}", signed_imm8),
-                                },
-                                Opcode::RET(c) => match c {
-                                    Some(c) => format!("RET {}", c),
-                                    None => String::from("RET"),
-                                },
-                                Opcode::JP(c, _) => match c {
-                                    Some(c) => format!("JP {}, $0x{:04x}", c, imm16),
-                                    None => format!("JP $0x{:04x}", imm16),
-                                },
-                                Opcode::CALL(c, _) => match c {
-                                    Some(c) => format!("CALL {}, $0x{:04x}", c, imm16),
-                                    None => format!("CALL $0x{:04x}", imm16),
-                                },
-                                Opcode::RETI => String::from("RETI"),
-                                Opcode::JPHL => String::from("JP (HL)"),
-                                Opcode::RST(v) => format!("RST 0x{:02x}", v),
+        match (signed_imm8, imm8, imm16) {
+            (Ok(signed_imm8), Ok(imm8), Ok(imm16)) => Ok(match self {
+                Opcode::NOP => String::from("NOP"),
+                Opcode::STOP => String::from("STOP 0"),
+                Opcode::HALT => String::from("HALT"),
+                Opcode::DI => String::from("DI"),
+                Opcode::EI => String::from("EI"),
 
-                                Opcode::INC16(r) => format!("INC {}", r),
-                                Opcode::DEC16(r) => format!("DEC {}", r),
-                                Opcode::ADDHL(dst, src) => format!("ADD {}, {}", dst, src),
-                                Opcode::ADDSP(dst, _) => format!("ADD {}, %{:+}", dst, signed_imm8),
+                Opcode::JR(c, _) => match c {
+                    Some(c) => format!("JR {}, %{:+}", c, signed_imm8),
+                    None => format!("JR %{:+}", signed_imm8),
+                },
+                Opcode::RET(c) => match c {
+                    Some(c) => format!("RET {}", c),
+                    None => String::from("RET"),
+                },
+                Opcode::JP(c, _) => match c {
+                    Some(c) => format!("JP {}, $0x{:04x}", c, imm16),
+                    None => format!("JP $0x{:04x}", imm16),
+                },
+                Opcode::CALL(c, _) => match c {
+                    Some(c) => format!("CALL {}, $0x{:04x}", c, imm16),
+                    None => format!("CALL $0x{:04x}", imm16),
+                },
+                Opcode::RETI => String::from("RETI"),
+                Opcode::JPHL => String::from("JP (HL)"),
+                Opcode::RST(v) => format!("RST 0x{:02x}", v),
 
-                                Opcode::LD16(r, _) => format!("LD {}, %0x{:04x}", r, imm16),
-                                Opcode::LDImmMemSP(_, r) => format!("LD (0x{:04x}), {}", imm16, r),
-                                Opcode::POP(r) => format!("POP {}", r),
-                                Opcode::PUSH(r) => format!("PUSH {}", r),
-                                Opcode::LDHLSPOffset(_) => {
-                                    format!("LD HL, SP+0x{:02x}", signed_imm8)
-                                }
-                                Opcode::LDSPHL => String::from("LD SP, HL"),
+                Opcode::INC16(r) => format!("INC {}", r),
+                Opcode::DEC16(r) => format!("DEC {}", r),
+                Opcode::ADDHL(dst, src) => format!("ADD {}, {}", dst, src),
+                Opcode::ADDSP(dst, _) => format!("ADD {}, %{:+}", dst, signed_imm8),
 
-                                Opcode::LDARegMem(r, m) => format!("LD {}, {}", r, m),
-                                Opcode::LDHLMemIncA(m, r) => format!("LD ({}+), {}", m.0, r),
-                                Opcode::LDHLMemDecA(m, r) => format!("LD ({}-), {}", m.0, r),
-                                Opcode::LDRegMemA(m, r) => format!("LD {}, {}", r, m),
-                                Opcode::LDAHLMemInc(r, m) => format!("LD {}, ({}+)", r, m.0),
-                                Opcode::LDAHLMemDec(r, m) => format!("LD {}, ({}-)", r, m.0),
-                                Opcode::LDRegImm(r, _) => format!("LD {}, %0x{:02x}", r, imm8),
-                                Opcode::LDHLMemImm(r, _) => format!("LD {}, %0x{:02x}", r, imm8),
-                                Opcode::LD(d, s) => format!("LD {}, {}", d, s),
-                                Opcode::LDRegHLMem(r, m) => format!("LD {}, {}", r, m),
-                                Opcode::LDHLMemReg(m, r) => format!("LD {}, {}", m, r),
-                                Opcode::LDHImmMemA(_, r) => {
-                                    format!("LDH ($FF00+0x{:02x}), {}", imm8, r)
-                                }
-                                Opcode::LDHAImmMem(r, _) => {
-                                    format!("LDH {}, ($FF00+0x{:02x})", r, imm8)
-                                }
-                                Opcode::LDHCMemA(_, r) => format!("LDH ($FF00+C), {}", r),
-                                Opcode::LDHACMem(r, _) => format!("LDH {}, ($FF00+C)", r),
-                                Opcode::LDImmMemA(_, r) => format!("LD ($0x{:04x}), {}", imm16, r),
-                                Opcode::LDAImmMem(r, _) => format!("LD {}, ($0x{:04x})", r, imm16),
+                Opcode::LD16(r, _) => format!("LD {}, %0x{:04x}", r, imm16),
+                Opcode::LDImmMemSP(_, r) => format!("LD (0x{:04x}), {}", imm16, r),
+                Opcode::POP(r) => format!("POP {}", r),
+                Opcode::PUSH(r) => format!("PUSH {}", r),
+                Opcode::LDHLSPOffset(_) => format!("LD HL, SP+0x{:02x}", signed_imm8),
+                Opcode::LDSPHL => String::from("LD SP, HL"),
 
-                                Opcode::INC(r) => format!("INC {}", r),
-                                Opcode::INCHLMem(m) => format!("INC {}", m),
-                                Opcode::DEC(r) => format!("DEC {}", r),
-                                Opcode::DECHLMem(m) => format!("DEC {}", m),
-                                Opcode::DAA => String::from("DAA"),
-                                Opcode::SCF => String::from("SCF"),
-                                Opcode::CPL => String::from("CPL"),
-                                Opcode::CCF => String::from("CCF"),
-                                Opcode::ADD(d, s) => format!("ADD {}, {}", d, s),
-                                Opcode::ADDHLMem(r, m) => format!("ADD {}, {}", r, m),
-                                Opcode::ADDImm(r, _) => format!("ADD {}, %0x{:02x}", r, imm16),
-                                Opcode::SUB(d, s) => format!("SUB {}, {}", d, s),
-                                Opcode::SUBHLMem(r, m) => format!("SUB {}, {}", r, m),
-                                Opcode::SUBImm(r, _) => format!("SUB {}, %0x{:02x}", r, imm16),
-                                Opcode::ADC(d, s) => format!("ADC {}, {}", d, s),
-                                Opcode::ADCHLMem(r, m) => format!("ADC {}, {}", r, m),
-                                Opcode::ADCImm(r, _) => format!("ADC {}, %0x{:02x}", r, imm16),
-                                Opcode::SBC(d, s) => format!("SBC {}, {}", d, s),
-                                Opcode::SBCHLMem(r, m) => format!("SBC {}, {}", r, m),
-                                Opcode::SBCImm(r, _) => format!("SBC {}, %0x{:02x}", r, imm16),
-                                Opcode::AND(d, s) => format!("AND {}, {}", d, s),
-                                Opcode::ANDHLMem(r, m) => format!("AND {}, {}", r, m),
-                                Opcode::ANDImm(r, _) => format!("AND {}, %0x{:02x}", r, imm16),
-                                Opcode::XOR(d, s) => format!("XOR {}, {}", d, s),
-                                Opcode::XORHLMem(r, m) => format!("XOR {}, {}", r, m),
-                                Opcode::XORImm(r, _) => format!("XOR {}, %0x{:02x}", r, imm16),
-                                Opcode::OR(d, s) => format!("OR {}, {}", d, s),
-                                Opcode::ORHLMem(r, m) => format!("OR {}, {}", r, m),
-                                Opcode::ORImm(r, _) => format!("OR {}, %0x{:02x}", r, imm16),
-                                Opcode::CP(d, s) => format!("CP {}, {}", d, s),
-                                Opcode::CPHLMem(r, m) => format!("CP {}, {}", r, m),
-                                Opcode::CPImm(r, _) => format!("CP {}, %0x{:02x}", r, imm16),
+                Opcode::LDARegMem(r, m) => format!("LD {}, {}", r, m),
+                Opcode::LDHLMemIncA(m, r) => format!("LD ({}+), {}", m.0, r),
+                Opcode::LDHLMemDecA(m, r) => format!("LD ({}-), {}", m.0, r),
+                Opcode::LDRegMemA(m, r) => format!("LD {}, {}", r, m),
+                Opcode::LDAHLMemInc(r, m) => format!("LD {}, ({}+)", r, m.0),
+                Opcode::LDAHLMemDec(r, m) => format!("LD {}, ({}-)", r, m.0),
+                Opcode::LDRegImm(r, _) => format!("LD {}, %0x{:02x}", r, imm8),
+                Opcode::LDHLMemImm(r, _) => format!("LD {}, %0x{:02x}", r, imm8),
+                Opcode::LD(d, s) => format!("LD {}, {}", d, s),
+                Opcode::LDRegHLMem(r, m) => format!("LD {}, {}", r, m),
+                Opcode::LDHLMemReg(m, r) => format!("LD {}, {}", m, r),
+                Opcode::LDHImmMemA(_, r) => format!("LDH ($FF00+0x{:02x}), {}", imm8, r),
+                Opcode::LDHAImmMem(r, _) => format!("LDH {}, ($FF00+0x{:02x})", r, imm8),
+                Opcode::LDHCMemA(_, r) => format!("LDH ($FF00+C), {}", r),
+                Opcode::LDHACMem(r, _) => format!("LDH {}, ($FF00+C)", r),
+                Opcode::LDImmMemA(_, r) => format!("LD ($0x{:04x}), {}", imm16, r),
+                Opcode::LDAImmMem(r, _) => format!("LD {}, ($0x{:04x})", r, imm16),
 
-                                Opcode::RLCA => String::from("RLCA"),
-                                Opcode::RLA => String::from("RLA"),
-                                Opcode::RRCA => String::from("RRCA"),
-                                Opcode::RRA => String::from("RRA"),
-                                Opcode::RLC(d) => format!("RLC {}", d),
-                                Opcode::RLCMem(d) => format!("RLC {}", d),
-                                Opcode::RRC(d) => format!("RRC {}", d),
-                                Opcode::RRCMem(d) => format!("RRC {}", d),
-                                Opcode::RL(d) => format!("RL {}", d),
-                                Opcode::RLMem(d) => format!("RL {}", d),
-                                Opcode::RR(d) => format!("RR {}", d),
-                                Opcode::RRMem(d) => format!("RR {}", d),
-                                Opcode::SLA(d) => format!("SLA {}", d),
-                                Opcode::SLAMem(d) => format!("SLA {}", d),
-                                Opcode::SRA(d) => format!("SRA {}", d),
-                                Opcode::SRAMem(d) => format!("SRA {}", d),
-                                Opcode::SWAP(d) => format!("SWAP {}", d),
-                                Opcode::SWAPMem(d) => format!("SWAP {}", d),
-                                Opcode::SRL(d) => format!("SRL {}", d),
-                                Opcode::SRLMem(d) => format!("SRL {}", d),
-                                Opcode::BIT(b, d) => format!("BIT {}, {}", b, d),
-                                Opcode::BITMem(b, d) => format!("BIT {}, {}", b, d),
-                                Opcode::SET(b, d) => format!("SET {}, {}", b, d),
-                                Opcode::SETMem(b, d) => format!("SET {}, {}", b, d),
-                                Opcode::RES(b, d) => format!("RES {}, {}", b, d),
-                                Opcode::RESMem(b, d) => format!("RES {}, {}", b, d),
+                Opcode::INC(r) => format!("INC {}", r),
+                Opcode::INCHLMem(m) => format!("INC {}", m),
+                Opcode::DEC(r) => format!("DEC {}", r),
+                Opcode::DECHLMem(m) => format!("DEC {}", m),
+                Opcode::DAA => String::from("DAA"),
+                Opcode::SCF => String::from("SCF"),
+                Opcode::CPL => String::from("CPL"),
+                Opcode::CCF => String::from("CCF"),
+                Opcode::ADD(d, s) => format!("ADD {}, {}", d, s),
+                Opcode::ADDHLMem(r, m) => format!("ADD {}, {}", r, m),
+                Opcode::ADDImm(r, _) => format!("ADD {}, %0x{:02x}", r, imm16),
+                Opcode::SUB(d, s) => format!("SUB {}, {}", d, s),
+                Opcode::SUBHLMem(r, m) => format!("SUB {}, {}", r, m),
+                Opcode::SUBImm(r, _) => format!("SUB {}, %0x{:02x}", r, imm16),
+                Opcode::ADC(d, s) => format!("ADC {}, {}", d, s),
+                Opcode::ADCHLMem(r, m) => format!("ADC {}, {}", r, m),
+                Opcode::ADCImm(r, _) => format!("ADC {}, %0x{:02x}", r, imm16),
+                Opcode::SBC(d, s) => format!("SBC {}, {}", d, s),
+                Opcode::SBCHLMem(r, m) => format!("SBC {}, {}", r, m),
+                Opcode::SBCImm(r, _) => format!("SBC {}, %0x{:02x}", r, imm16),
+                Opcode::AND(d, s) => format!("AND {}, {}", d, s),
+                Opcode::ANDHLMem(r, m) => format!("AND {}, {}", r, m),
+                Opcode::ANDImm(r, _) => format!("AND {}, %0x{:02x}", r, imm16),
+                Opcode::XOR(d, s) => format!("XOR {}, {}", d, s),
+                Opcode::XORHLMem(r, m) => format!("XOR {}, {}", r, m),
+                Opcode::XORImm(r, _) => format!("XOR {}, %0x{:02x}", r, imm16),
+                Opcode::OR(d, s) => format!("OR {}, {}", d, s),
+                Opcode::ORHLMem(r, m) => format!("OR {}, {}", r, m),
+                Opcode::ORImm(r, _) => format!("OR {}, %0x{:02x}", r, imm16),
+                Opcode::CP(d, s) => format!("CP {}, {}", d, s),
+                Opcode::CPHLMem(r, m) => format!("CP {}, {}", r, m),
+                Opcode::CPImm(r, _) => format!("CP {}, %0x{:02x}", r, imm16),
 
-                                Opcode::Illegal => String::from("<illegal opcode>"),
-                            })
-                    })
-            })
+                Opcode::RLCA => String::from("RLCA"),
+                Opcode::RLA => String::from("RLA"),
+                Opcode::RRCA => String::from("RRCA"),
+                Opcode::RRA => String::from("RRA"),
+                Opcode::RLC(d) => format!("RLC {}", d),
+                Opcode::RLCMem(d) => format!("RLC {}", d),
+                Opcode::RRC(d) => format!("RRC {}", d),
+                Opcode::RRCMem(d) => format!("RRC {}", d),
+                Opcode::RL(d) => format!("RL {}", d),
+                Opcode::RLMem(d) => format!("RL {}", d),
+                Opcode::RR(d) => format!("RR {}", d),
+                Opcode::RRMem(d) => format!("RR {}", d),
+                Opcode::SLA(d) => format!("SLA {}", d),
+                Opcode::SLAMem(d) => format!("SLA {}", d),
+                Opcode::SRA(d) => format!("SRA {}", d),
+                Opcode::SRAMem(d) => format!("SRA {}", d),
+                Opcode::SWAP(d) => format!("SWAP {}", d),
+                Opcode::SWAPMem(d) => format!("SWAP {}", d),
+                Opcode::SRL(d) => format!("SRL {}", d),
+                Opcode::SRLMem(d) => format!("SRL {}", d),
+                Opcode::BIT(b, d) => format!("BIT {}, {}", b, d),
+                Opcode::BITMem(b, d) => format!("BIT {}, {}", b, d),
+                Opcode::SET(b, d) => format!("SET {}, {}", b, d),
+                Opcode::SETMem(b, d) => format!("SET {}, {}", b, d),
+                Opcode::RES(b, d) => format!("RES {}, {}", b, d),
+                Opcode::RESMem(b, d) => format!("RES {}, {}", b, d),
+
+                Opcode::Illegal => String::from("<illegal opcode>"),
+            }),
+            _ => Err("??".to_string()),
+        }
     }
 
     /// Returns a `String` representation of the instruction, using the
