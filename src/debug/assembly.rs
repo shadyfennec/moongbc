@@ -3,6 +3,8 @@ use crate::{
     cpu::CPU,
     debug::{util::FromHexString, widget::Widget},
     disassembly::{Disassembler, InstructionWindow},
+    memory_map::{Mem, Mem16},
+    opcode::{Decoder, Opcode},
     register::Reg16,
     Src,
 };
@@ -119,7 +121,7 @@ impl Widget for Assembly {
         self.selected
     }
 
-    fn handle_key(&mut self, key: KeyEvent, _: &mut CPU) -> Option<(WidgetKind, String)> {
+    fn handle_key(&mut self, key: KeyEvent, cpu: &mut CPU) -> Option<(WidgetKind, String)> {
         match key.code {
             KeyCode::Down => {
                 self.pos = self.pos.saturating_add(self.sizes[1] as u16);
@@ -132,6 +134,33 @@ impl Widget for Assembly {
             KeyCode::Char('g') => {
                 self.command = Some(Command::Goto);
                 Some((WidgetKind::Assembly, String::from("Go to instruction:")))
+            }
+            KeyCode::Char('j') => {
+                let opcode = Decoder::decode_with_context(cpu, self.pos);
+
+                if let Some(opcode) = opcode {
+                    match opcode {
+                        Opcode::CALL(_, _) => {
+                            self.pos = Mem16(self.pos + 1).read(cpu);
+                        }
+                        Opcode::JP(_, _) => {
+                            self.pos = Mem16(self.pos + 1).read(cpu);
+                        }
+                        Opcode::JPHL => {
+                            self.pos = Reg16::HL.read(cpu);
+                        }
+                        Opcode::JR(_, _) => {
+                            let offset = Mem(self.pos + 1).read(cpu) as i8;
+                            self.pos = if offset < 0 {
+                                self.pos.saturating_sub((-offset) as u16)
+                            } else {
+                                self.pos.saturating_add(offset as u16)
+                            };
+                        }
+                        _ => {}
+                    }
+                }
+                None
             }
             _ => None,
         }
