@@ -119,6 +119,9 @@ impl Debugger {
                 self.draw(&mut terminal)?;
             }
 
+            self.widgets
+                .set_status(if self.running { "Running" } else { "Idle" });
+
             let input = match rx.try_recv() {
                 Ok(e) => Some(e),
                 Err(e) => match e {
@@ -130,6 +133,9 @@ impl Debugger {
             if let Some(result) = input {
                 match result {
                     Event::Input(event) => match self.widgets.handle_key(event, &mut self.cpu) {
+                        KeyAction::Pause => {
+                            self.running = false;
+                        }
                         KeyAction::Nothing => {
                             self.refresh();
                         }
@@ -161,7 +167,7 @@ impl Debugger {
                             self.draw(&mut terminal)?;
                         }
                     }
-                }
+                };
             }
         }
 

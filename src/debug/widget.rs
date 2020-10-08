@@ -1,4 +1,4 @@
-use super::input::Input;
+use super::{input::Input, status::Status};
 use crate::cpu::CPU;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use std::io::Stdout;
@@ -13,6 +13,7 @@ pub enum KeyAction {
     Nothing,
     Run,
     Step,
+    Pause,
     Quit,
 }
 
@@ -139,6 +140,7 @@ type WidgetWithKind = (WidgetKind, Box<dyn Widget>);
 pub struct WidgetList {
     widgets: Vec<WidgetWithKind>,
     input: Input,
+    status: Status,
     widget_callback: Option<WidgetKind>,
 }
 
@@ -148,6 +150,7 @@ impl WidgetList {
         WidgetList {
             widgets: vec![],
             input: Input::new(),
+            status: Status::new(),
             widget_callback: None,
         }
     }
@@ -181,6 +184,11 @@ impl WidgetList {
     /// Returns the index of the widget corresponding to the specified kind.
     pub fn find(&self, kind: &WidgetKind) -> Option<usize> {
         self.widgets.iter().position(|(k, _)| *k == *kind)
+    }
+
+    /// Sets the status line text
+    pub fn set_status(&mut self, status: &'static str) {
+        self.status.set_status(status)
     }
 
     pub fn display_error<S: Into<String>>(&mut self, message: S) {
@@ -255,9 +263,8 @@ impl WidgetList {
                 *ret = KeyAction::Run;
                 Some(())
             }
-
             KeyCode::Char(' ') => {
-                *ret = KeyAction::Nothing;
+                *ret = KeyAction::Pause;
                 Some(())
             }
             KeyCode::Esc => {
@@ -387,6 +394,11 @@ impl WidgetList {
             .constraints([Constraint::Min(5), Constraint::Percentage(100)])
             .split(chunks[0]);
 
+        let bottom = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(70), Constraint::Percentage(30)].as_ref())
+            .split(top_bottom[1]);
+
         vec![
             (&WidgetKind::Registers, left_chunks[0]),
             (&WidgetKind::Memory, left_chunks[1]),
@@ -401,6 +413,7 @@ impl WidgetList {
                 .draw(f, r, cpu);
         });
 
-        self.input.draw(f, top_bottom[1], cpu);
+        self.input.draw(f, bottom[0], cpu);
+        self.status.draw(f, bottom[1], cpu);
     }
 }

@@ -5,5 +5,6 @@ mod breakpoint_view;
 mod input;
 mod memory_view;
 mod register_view;
+mod status;
 mod util;
 mod widget;
