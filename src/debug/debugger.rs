@@ -46,6 +46,8 @@ impl Debugger {
 
     /// Refreshes the UI.
     pub fn refresh(&mut self) {
+        self.widgets
+            .set_status(if self.running { "Running" } else { "Idle" });
         self.widgets.refresh(&self.cpu);
     }
 
@@ -99,73 +101,74 @@ impl Debugger {
         self.widgets.select(Some(WidgetKind::Memory));
 
         loop {
-            if self.running {
-                self.running = match self.cpu.step_check() {
-                    Ok(r) => {
-                        if r {
-                            self.refresh();
-                            false
-                        } else {
-                            true
-                        }
-                    }
-                    Err(e) => {
-                        self.widgets.display_error(format!("{}", e));
-                        self.refresh();
-                        false
-                    }
+            // In order to not hog the CPU when idle, I change the way
+            // I poll for events depending on the state of the emulator:
+            //
+            // - If the emulator is running, I receive events without
+            //   blocking, enabling us to have the speed required for the
+            //   emulated CPU
+            // - If the emulator is idle, I receive events with blocking;
+            //   since we have an event for each 16ms, it draws the UI at
+            //   60fps without constantly checking for events, which used
+            //   the entire CPU for nothing.
+            let event = if self.running {
+                match rx.try_recv() {
+                    Ok(e) => Some(e),
+                    Err(e) => match e {
+                        mpsc::TryRecvError::Empty => None,
+                        mpsc::TryRecvError::Disconnected => break,
+                    },
                 }
             } else {
-                self.draw(&mut terminal)?;
-            }
-
-            self.widgets
-                .set_status(if self.running { "Running" } else { "Idle" });
-
-            let input = match rx.try_recv() {
-                Ok(e) => Some(e),
-                Err(e) => match e {
-                    mpsc::TryRecvError::Empty => None,
-                    mpsc::TryRecvError::Disconnected => break,
-                },
+                match rx.recv() {
+                    Ok(e) => Some(e),
+                    Err(_) => break,
+                }
             };
 
-            if let Some(result) = input {
-                match result {
-                    Event::Input(event) => match self.widgets.handle_key(event, &mut self.cpu) {
-                        KeyAction::Pause => {
-                            self.running = false;
-                        }
-                        KeyAction::Nothing => {
-                            self.refresh();
-                        }
-                        KeyAction::Run => {
-                            self.running = true;
-                        }
-                        KeyAction::Step => {
-                            // TODO: handle error
-                            if let Err(e) = self.cpu.step() {
-                                self.widgets.display_error(format!("{}", e));
+            if self.running {
+                self.running = match self.cpu.step_check() {
+                    Ok(r) => !r,
+                    Err(e) => {
+                        self.widgets.display_error(format!("{}", e));
+                        false
+                    }
+                };
+            }
+
+            if let Some(e) = event {
+                match e {
+                    Event::Input(event) => {
+                        match self.widgets.handle_key(event, &mut self.cpu) {
+                            KeyAction::Pause => {
+                                self.running = false;
+                            }
+                            KeyAction::Nothing => {}
+                            KeyAction::Run => {
+                                self.running = true;
+                            }
+                            KeyAction::Step => {
+                                // TODO: handle error
+                                if let Err(e) = self.cpu.step() {
+                                    self.widgets.display_error(format!("{}", e));
+                                }
                                 self.refresh();
                             }
-                            self.refresh();
+                            KeyAction::Quit => {
+                                disable_raw_mode()?;
+                                execute!(
+                                    terminal.backend_mut(),
+                                    LeaveAlternateScreen,
+                                    DisableMouseCapture
+                                )?;
+                                terminal.show_cursor()?;
+                                break;
+                            }
                         }
-                        KeyAction::Quit => {
-                            disable_raw_mode()?;
-                            execute!(
-                                terminal.backend_mut(),
-                                LeaveAlternateScreen,
-                                DisableMouseCapture
-                            )?;
-                            terminal.show_cursor()?;
-                            break;
-                        }
-                    },
+                    }
                     Event::Tick => {
-                        if self.running {
-                            self.refresh();
-                            self.draw(&mut terminal)?;
-                        }
+                        self.refresh();
+                        self.draw(&mut terminal)?;
                     }
                 };
             }
