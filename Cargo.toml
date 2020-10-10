@@ -8,6 +8,7 @@ version = "0.1.0"
 
 [dependencies]
 crossterm = "0.17.6"
+minifb = "*"
 
 [dependencies.tui]
 default-features = false

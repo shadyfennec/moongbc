@@ -45,6 +45,8 @@ impl CPU {
 
         let (maybe_pc, cycles) = self.execute_opcode(instruction, memory);
 
+        memory.gpu.count_cycles(cycles);
+
         self.cycles += cycles;
         let new_pc =
             maybe_pc.unwrap_or_else(|| Reg16::PC.read(&self.registers).wrapping_add(size as u16));
@@ -684,20 +686,6 @@ impl CPU {
             Either::Left(r) => r.write(&mut self.registers, value & mask),
             Either::Right(m) => m.write(memory, &self.registers, value & mask),
         };
-    }
-
-    pub fn handle_io_read(&self, addr: u16) -> Option<u8> {
-        match addr {
-            _ => None,
-        }
-    }
-
-    pub fn handle_io_write(&mut self, addr: u16, value: u8, memory: &mut Interconnect) {
-        match addr {
-            // SVBK: Change WRAM bank
-            0xFF70 => memory.wram.set_bank((value & 0x3) as usize),
-            _ => {}
-        }
     }
 
     /// Executes an instruction, and returns a potentially new

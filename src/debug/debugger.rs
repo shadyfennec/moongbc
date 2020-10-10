@@ -5,6 +5,7 @@ use super::{
 use crate::{
     cpu::CPU,
     debug::widget::{WidgetKind, WidgetList},
+    gui::GUI,
     memory_map::Interconnect,
 };
 use crossterm::{
@@ -32,16 +33,18 @@ enum Event<I> {
 pub struct Debugger {
     cpu: CPU,
     memory: Interconnect,
+    gui: GUI,
     widgets: WidgetList,
     running: bool,
 }
 
 impl Debugger {
     /// Creates a new debugger from a `CPU`.
-    pub fn new(cpu: CPU, memory: Interconnect) -> Debugger {
+    pub fn new(cpu: CPU, memory: Interconnect, gui: GUI) -> Debugger {
         Debugger {
             cpu,
             memory,
+            gui,
             widgets: WidgetList::new(),
             running: false,
         }
@@ -131,6 +134,7 @@ impl Debugger {
 
             if self.running {
                 self.running = !self.cpu.step_check(&mut self.memory);
+                self.memory.gpu_step(&mut self.gui);
             }
 
             if let Some(e) = event {
@@ -150,6 +154,7 @@ impl Debugger {
                             KeyAction::Step => {
                                 // TODO: handle error
                                 self.cpu.step(&mut self.memory);
+                                self.memory.gpu_step(&mut self.gui);
                                 self.refresh();
                             }
                             KeyAction::Quit => {

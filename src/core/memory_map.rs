@@ -22,7 +22,7 @@
 
 use std::{fmt, path::Path};
 
-use crate::{cartridge::Cartridge, gpu::GPU};
+use crate::{cartridge::Cartridge, gpu::GPU, gui::GUI};
 use crate::{
     cartridge::MBCError,
     register::{Reg8, Registers},
@@ -69,6 +69,14 @@ pub const HRAM_END: u16 = 0xFFFE;
 pub const HRAM_SIZE: usize = (HRAM_END - HRAM_START + 1) as usize;
 
 pub const EI_ADDRESS: u16 = 0xFFFF;
+
+const LCDC_ADDR: u16 = 0xFF40;
+const STAT_ADDR: u16 = 0xFF41;
+const LY_ADDR: u16 = 0xFF44;
+const LYC_ADDR: u16 = 0xFF45;
+const SCX_ADDR: u16 = 0xFF43;
+const SCY_ADDR: u16 = 0xFF42;
+
 #[derive(Debug, Copy, Clone)]
 pub enum MemIdx {
     Imm16,
@@ -322,6 +330,37 @@ impl fmt::Display for MemoryError {
     }
 }
 
+#[derive(Copy, Clone)]
+pub enum Interrupt {
+    VBlank,
+    LCDC,
+    Timer,
+    Serial,
+    Joypad,
+}
+
+impl Interrupt {
+    pub fn bit(&self) -> u8 {
+        match self {
+            Interrupt::VBlank => 0,
+            Interrupt::LCDC => 1,
+            Interrupt::Timer => 2,
+            Interrupt::Serial => 3,
+            Interrupt::Joypad => 4,
+        }
+    }
+
+    pub fn mask(&self) -> u8 {
+        match self {
+            Interrupt::VBlank => 0x1,
+            Interrupt::LCDC => 0x2,
+            Interrupt::Timer => 0x4,
+            Interrupt::Serial => 0x8,
+            Interrupt::Joypad => 0x10,
+        }
+    }
+}
+
 /// Describes the memory map, responsible for dispatching
 /// any address in the address space to the correct location
 /// in the system.
@@ -329,7 +368,7 @@ pub struct Interconnect {
     cartridge: Option<Cartridge>,
     bootstrap: BootstrapRom,
     boot_flag: bool,
-    gpu: GPU,
+    pub(crate) gpu: GPU,
     pub(crate) wram: WRAM,
     hram: HRAM,
     io_registers: [u8; IO_SIZE],
@@ -379,6 +418,57 @@ impl Interconnect {
         }
     }
 
+    pub fn gpu_step(&mut self, gui: &mut GUI) {
+        self.gpu.lcdc = self.read(LCDC_ADDR).into();
+        self.gpu.line = self.read(LY_ADDR);
+        self.gpu.stat = self.read(STAT_ADDR).into();
+        self.gpu.lyc = self.read(LYC_ADDR);
+        self.gpu.scx = self.read(SCX_ADDR);
+        self.gpu.scy = self.read(SCY_ADDR);
+
+        if let Some(i) = self.gpu.step(gui) {
+            self.request_interrupt(i);
+        }
+
+        self.write(LCDC_ADDR, self.gpu.lcdc.into());
+        self.write(LY_ADDR, self.gpu.line);
+        self.write(STAT_ADDR, self.gpu.stat.into());
+        self.write(LYC_ADDR, self.gpu.lyc);
+        self.write(SCX_ADDR, self.gpu.scx);
+        self.write(SCY_ADDR, self.gpu.scy);
+    }
+
+    pub fn handle_io_read(&self, addr: u16) -> Option<u8> {
+        match addr {
+            // BCPD/BGPD - Background Palette Data
+            0xFF69 => Some(self.gpu.get_palette(self.read(0xFF68))),
+            _ => None,
+        }
+    }
+
+    pub fn handle_io_write(&mut self, addr: u16, value: u8) -> Option<()> {
+        let mut ret = None;
+
+        match addr {
+            // VBK: VRAM Bank
+            0xFF4F => self.gpu.set_bank(value),
+            // BCPD/BGPD - Background Palette Data
+            0xFF69 => {
+                let idx = self.read(0xFF68);
+                self.gpu.set_palette(idx, value);
+                if idx & 0x80 == 0x80 {
+                    self.write(0xFF68, (idx + 1) % 64);
+                }
+                ret = Some(())
+            }
+            // SVBK: Change WRAM bank
+            0xFF70 => self.wram.set_bank((value & 0x3) as usize),
+            _ => {}
+        }
+
+        ret
+    }
+
     pub fn read(&self, addr: u16) -> u8 {
         match addr {
             ROM_START..=0x00FF | 0x0200..=ROM_END | ERAM_START..=ERAM_END => {
@@ -396,7 +486,13 @@ impl Interconnect {
             ECHO_START..=ECHO_END => self.wram.read(addr),
             OAM_START..=OAM_END => self.gpu.read(addr),
             UNUSED_START..=UNUSED_END => 0,
-            IO_START..=IO_END => self.io_registers[(addr - IO_START) as usize],
+            IO_START..=IO_END => {
+                if let Some(v) = self.handle_io_read(addr) {
+                    v
+                } else {
+                    self.io_registers[(addr - IO_START) as usize]
+                }
+            }
             HRAM_START..=HRAM_END => self.hram.read(addr),
             EI_ADDRESS => self.interrupt_enable.into(),
         }
@@ -429,7 +525,13 @@ impl Interconnect {
             ECHO_START..=ECHO_END => Ok(self.wram.read(addr)),
             OAM_START..=OAM_END => Ok(self.gpu.read(addr)),
             UNUSED_START..=UNUSED_END => Ok(0),
-            IO_START..=IO_END => Ok(self.io_registers[(addr - IO_START) as usize]),
+            IO_START..=IO_END => {
+                if let Some(v) = self.handle_io_read(addr) {
+                    Ok(v)
+                } else {
+                    Ok(self.io_registers[(addr - IO_START) as usize])
+                }
+            }
             HRAM_START..=HRAM_END => Ok(self.hram.read(addr)),
             EI_ADDRESS => Ok(self.interrupt_enable.into()),
         }
@@ -446,9 +548,22 @@ impl Interconnect {
                 self.gpu.write(addr, value);
             }
             UNUSED_START..=UNUSED_END => {}
-            IO_START..=IO_END => self.io_registers[(addr - IO_START) as usize] = value,
+            IO_START..=IO_END => {
+                if self.handle_io_write(addr, value).is_none() {
+                    self.io_registers[(addr - IO_START) as usize] = value
+                }
+            }
             HRAM_START..=HRAM_END => self.hram.write(addr, value),
             EI_ADDRESS => self.interrupt_enable.write(value),
         }
+    }
+
+    pub fn request_interrupt(&mut self, interrupt: Interrupt) {
+        let current = self.read(0xFF0F);
+        self.write(0xFF0F, current | interrupt.mask());
+    }
+
+    pub fn interrupt_enabled(&mut self, interrupt: Interrupt) -> bool {
+        self.interrupt_enable.get(interrupt.bit())
     }
 }
