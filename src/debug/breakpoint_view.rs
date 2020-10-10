@@ -1,8 +1,13 @@
 use super::widget::WidgetKind;
 use crate::{
-    cpu::{Breakpoint, InterruptKind, WatchKind, Watcher, CPU},
+    breakpoint::Breakpoint,
+    breakpoint::WatchKind,
+    breakpoint::Watcher,
+    cpu::CPU,
     debug::{util::FromHexString, widget::Widget},
+    memory_map::Interconnect,
     memory_map::Mem,
+    memory_map::MemIdx,
     register::{Flag, Reg16, Reg8},
 };
 use crossterm::event::{KeyCode, KeyEvent};
@@ -15,131 +20,104 @@ use tui::{
     Frame,
 };
 
-fn parse_reg(input: String, cpu: &mut CPU) -> Result<(), Option<String>> {
+fn parse_reg(input: String, cpu: &mut CPU, _: &Interconnect) -> Result<(), Option<String>> {
     match input.as_str() {
         "af" => {
-            cpu.breakpoints
-                .push(Breakpoint::Watch(WatchKind::Reg16(Watcher::new(
-                    Reg16::AF,
-                    cpu,
-                ))));
+            cpu.breakpoints.push(Breakpoint::Watch(WatchKind::Reg16(
+                Watcher::<u16, Reg16>::new(Reg16::AF, &cpu.registers),
+            )));
             Ok(())
         }
         "bc" => {
-            cpu.breakpoints
-                .push(Breakpoint::Watch(WatchKind::Reg16(Watcher::new(
-                    Reg16::BC,
-                    cpu,
-                ))));
+            cpu.breakpoints.push(Breakpoint::Watch(WatchKind::Reg16(
+                Watcher::<u16, Reg16>::new(Reg16::BC, &cpu.registers),
+            )));
             Ok(())
         }
         "de" => {
-            cpu.breakpoints
-                .push(Breakpoint::Watch(WatchKind::Reg16(Watcher::new(
-                    Reg16::DE,
-                    cpu,
-                ))));
+            cpu.breakpoints.push(Breakpoint::Watch(WatchKind::Reg16(
+                Watcher::<u16, Reg16>::new(Reg16::DE, &cpu.registers),
+            )));
             Ok(())
         }
         "hl" => {
-            cpu.breakpoints
-                .push(Breakpoint::Watch(WatchKind::Reg16(Watcher::new(
-                    Reg16::HL,
-                    cpu,
-                ))));
+            cpu.breakpoints.push(Breakpoint::Watch(WatchKind::Reg16(
+                Watcher::<u16, Reg16>::new(Reg16::HL, &cpu.registers),
+            )));
             Ok(())
         }
         "sp" => {
-            cpu.breakpoints
-                .push(Breakpoint::Watch(WatchKind::Reg16(Watcher::new(
-                    Reg16::SP,
-                    cpu,
-                ))));
+            cpu.breakpoints.push(Breakpoint::Watch(WatchKind::Reg16(
+                Watcher::<u16, Reg16>::new(Reg16::SP, &cpu.registers),
+            )));
             Ok(())
         }
         "pc" => {
-            cpu.breakpoints
-                .push(Breakpoint::Watch(WatchKind::Reg16(Watcher::new(
-                    Reg16::PC,
-                    cpu,
-                ))));
+            cpu.breakpoints.push(Breakpoint::Watch(WatchKind::Reg16(
+                Watcher::<u16, Reg16>::new(Reg16::PC, &cpu.registers),
+            )));
             Ok(())
         }
         "a" => {
-            cpu.breakpoints
-                .push(Breakpoint::Watch(WatchKind::Reg8(Watcher::new(
-                    Reg8::A,
-                    cpu,
-                ))));
+            cpu.breakpoints.push(Breakpoint::Watch(WatchKind::Reg8(
+                Watcher::<u8, Reg8>::new(Reg8::A, &cpu.registers),
+            )));
             Ok(())
         }
         "f" => {
-            cpu.breakpoints
-                .push(Breakpoint::Watch(WatchKind::Reg8(Watcher::new(
-                    Reg8::F,
-                    cpu,
-                ))));
+            cpu.breakpoints.push(Breakpoint::Watch(WatchKind::Reg8(
+                Watcher::<u8, Reg8>::new(Reg8::F, &cpu.registers),
+            )));
             Ok(())
         }
         "b" => {
-            cpu.breakpoints
-                .push(Breakpoint::Watch(WatchKind::Reg8(Watcher::new(
-                    Reg8::B,
-                    cpu,
-                ))));
+            cpu.breakpoints.push(Breakpoint::Watch(WatchKind::Reg8(
+                Watcher::<u8, Reg8>::new(Reg8::B, &cpu.registers),
+            )));
             Ok(())
         }
         "c" => {
-            cpu.breakpoints
-                .push(Breakpoint::Watch(WatchKind::Reg8(Watcher::new(
-                    Reg8::C,
-                    cpu,
-                ))));
+            cpu.breakpoints.push(Breakpoint::Watch(WatchKind::Reg8(
+                Watcher::<u8, Reg8>::new(Reg8::C, &cpu.registers),
+            )));
             Ok(())
         }
         "d" => {
-            cpu.breakpoints
-                .push(Breakpoint::Watch(WatchKind::Reg8(Watcher::new(
-                    Reg8::D,
-                    cpu,
-                ))));
+            cpu.breakpoints.push(Breakpoint::Watch(WatchKind::Reg8(
+                Watcher::<u8, Reg8>::new(Reg8::D, &cpu.registers),
+            )));
             Ok(())
         }
         "e" => {
-            cpu.breakpoints
-                .push(Breakpoint::Watch(WatchKind::Reg8(Watcher::new(
-                    Reg8::E,
-                    cpu,
-                ))));
+            cpu.breakpoints.push(Breakpoint::Watch(WatchKind::Reg8(
+                Watcher::<u8, Reg8>::new(Reg8::E, &cpu.registers),
+            )));
             Ok(())
         }
         "h" => {
-            cpu.breakpoints
-                .push(Breakpoint::Watch(WatchKind::Reg8(Watcher::new(
-                    Reg8::H,
-                    cpu,
-                ))));
+            cpu.breakpoints.push(Breakpoint::Watch(WatchKind::Reg8(
+                Watcher::<u8, Reg8>::new(Reg8::H, &cpu.registers),
+            )));
             Ok(())
         }
         "l" => {
-            cpu.breakpoints
-                .push(Breakpoint::Watch(WatchKind::Reg8(Watcher::new(
-                    Reg8::L,
-                    cpu,
-                ))));
+            cpu.breakpoints.push(Breakpoint::Watch(WatchKind::Reg8(
+                Watcher::<u8, Reg8>::new(Reg8::L, &cpu.registers),
+            )));
             Ok(())
         }
         _ => Err(None),
     }
 }
 
-fn parse_memory(input: String, cpu: &mut CPU) -> Result<(), Option<String>> {
+fn parse_memory(input: String, cpu: &mut CPU, memory: &Interconnect) -> Result<(), Option<String>> {
     match u16::from_hex_string(input) {
         Ok(addr) => {
             cpu.breakpoints
-                .push(Breakpoint::Watch(WatchKind::Mem(Watcher::new(
-                    Mem(addr),
-                    cpu,
+                .push(Breakpoint::Watch(WatchKind::Mem(Watcher::<u8, Mem>::new(
+                    Mem(MemIdx::Direct(addr)),
+                    memory,
+                    &cpu.registers,
                 ))));
             Ok(())
         }
@@ -147,51 +125,42 @@ fn parse_memory(input: String, cpu: &mut CPU) -> Result<(), Option<String>> {
     }
 }
 
-fn parse_flag(input: String, cpu: &mut CPU) -> Result<(), Option<String>> {
+fn parse_flag(input: String, cpu: &mut CPU, _: &Interconnect) -> Result<(), Option<String>> {
     match input.as_str() {
         "z" => {
-            cpu.breakpoints
-                .push(Breakpoint::Watch(WatchKind::Flag(Watcher::new(
-                    Flag::Z,
-                    cpu,
-                ))));
+            cpu.breakpoints.push(Breakpoint::Watch(WatchKind::Flag(
+                Watcher::<bool, Flag>::new(Flag::Z, &cpu.registers),
+            )));
             Ok(())
         }
         "n" => {
-            cpu.breakpoints
-                .push(Breakpoint::Watch(WatchKind::Flag(Watcher::new(
-                    Flag::Z,
-                    cpu,
-                ))));
+            cpu.breakpoints.push(Breakpoint::Watch(WatchKind::Flag(
+                Watcher::<bool, Flag>::new(Flag::Z, &cpu.registers),
+            )));
             Ok(())
         }
         "h" => {
-            cpu.breakpoints
-                .push(Breakpoint::Watch(WatchKind::Flag(Watcher::new(
-                    Flag::Z,
-                    cpu,
-                ))));
+            cpu.breakpoints.push(Breakpoint::Watch(WatchKind::Flag(
+                Watcher::<bool, Flag>::new(Flag::Z, &cpu.registers),
+            )));
             Ok(())
         }
         "c" => {
-            cpu.breakpoints
-                .push(Breakpoint::Watch(WatchKind::Flag(Watcher::new(
-                    Flag::Z,
-                    cpu,
-                ))));
+            cpu.breakpoints.push(Breakpoint::Watch(WatchKind::Flag(
+                Watcher::<bool, Flag>::new(Flag::Z, &cpu.registers),
+            )));
             Ok(())
         }
         _ => Err(None),
     }
 }
 
-type ParseFunction = dyn Fn(String, &mut CPU) -> Result<(), Option<String>>;
+type ParseFunction = dyn Fn(String, &mut CPU, &Interconnect) -> Result<(), Option<String>>;
 
 enum Command {
     Address,
     Opcode,
     Watch,
-    Interrupt,
 }
 
 /// Represents the widget responsible for displaying the different
@@ -218,23 +187,29 @@ impl BreakpointView {
 }
 
 impl Widget for BreakpointView {
-    fn refresh(&mut self, cpu: &CPU) {
+    fn refresh(&mut self, cpu: &CPU, _: &Interconnect) {
         if self.cursor.is_none() && !cpu.breakpoints.is_empty() {
             self.cursor = Some(0);
         }
         self.breakpoint_count = cpu.breakpoints.len();
     }
 
-    fn draw(&mut self, f: &mut Frame<CrosstermBackend<Stdout>>, chunk: Rect, cpu: &CPU) {
+    fn draw(
+        &mut self,
+        f: &mut Frame<CrosstermBackend<Stdout>>,
+        chunk: Rect,
+        cpu: &CPU,
+        memory: &Interconnect,
+    ) {
         if !self.init {
             self.init = true;
-            self.refresh(cpu);
+            self.refresh(cpu, memory);
         }
 
         let items = cpu
             .breakpoints
             .iter()
-            .map(|b| Text::Raw(Cow::Owned(b.to_string(cpu))));
+            .map(|b| Text::Raw(Cow::Owned(b.to_string(memory, &cpu.registers))));
 
         let mut list_state = ListState::default();
         list_state.select(self.cursor);
@@ -265,7 +240,12 @@ impl Widget for BreakpointView {
         self.selected
     }
 
-    fn handle_key(&mut self, key: KeyEvent, cpu: &mut CPU) -> Option<(WidgetKind, String)> {
+    fn handle_key(
+        &mut self,
+        key: KeyEvent,
+        cpu: &mut CPU,
+        _: &Interconnect,
+    ) -> Option<(WidgetKind, String)> {
         match key.code {
             KeyCode::Char('b') => {
                 self.command = Some(Command::Address);
@@ -278,10 +258,6 @@ impl Widget for BreakpointView {
             KeyCode::Char('w') => {
                 self.command = Some(Command::Watch);
                 Some((WidgetKind::Breakpoints, "Watch:".to_string()))
-            }
-            KeyCode::Char('i') => {
-                self.command = Some(Command::Interrupt);
-                Some((WidgetKind::Breakpoints, "Watch interrupt:".to_string()))
             }
             KeyCode::Char('d') => {
                 if let Some(idx) = &self.cursor {
@@ -311,7 +287,12 @@ impl Widget for BreakpointView {
         }
     }
 
-    fn process_input(&mut self, input: String, cpu: &mut CPU) -> Result<(), Option<String>> {
+    fn process_input(
+        &mut self,
+        input: String,
+        cpu: &mut CPU,
+        memory: &mut Interconnect,
+    ) -> Result<(), Option<String>> {
         if let Some(command) = &self.command {
             match command {
                 Command::Address => match u16::from_hex_string(input) {
@@ -342,7 +323,7 @@ impl Widget for BreakpointView {
                             if tokens.len() == 2 {
                                 let (kind, input) = (tokens[0], tokens[1]);
                                 if s.starts_with(kind.to_lowercase().as_str()) {
-                                    Some((f)(input.to_string(), cpu))
+                                    Some((f)(input.to_string(), cpu, memory))
                                 } else {
                                     None
                                 }
@@ -351,32 +332,6 @@ impl Widget for BreakpointView {
                             }
                         })
                         .next()
-                        .unwrap_or(Err(None))
-                }
-                Command::Interrupt => {
-                    let kinds: Vec<(&'static str, InterruptKind)> = vec![
-                        ("vblank", InterruptKind::VBlank),
-                        ("lcd", InterruptKind::LCD),
-                        ("timer", InterruptKind::Timer),
-                        ("serial", InterruptKind::SerialIO),
-                        ("joypad", InterruptKind::Joypad),
-                    ];
-
-                    kinds
-                        .into_iter()
-                        .filter_map(|(k, i)| {
-                            let input = input.to_lowercase();
-                            if k.starts_with(input.as_str()) {
-                                Some(i)
-                            } else {
-                                None
-                            }
-                        })
-                        .next()
-                        .map(|i| {
-                            cpu.add_breakpoint(Breakpoint::Interrupt(i));
-                            Ok(())
-                        })
                         .unwrap_or(Err(None))
                 }
             }

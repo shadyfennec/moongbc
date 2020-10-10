@@ -1,3 +1,5 @@
+use crate::memory_map::Interconnect;
+
 use super::widget::Widget;
 use std::borrow::Cow;
 use tui::{
@@ -23,13 +25,14 @@ impl Status {
 }
 
 impl Widget for Status {
-    fn refresh(&mut self, _: &crate::cpu::CPU) {}
+    fn refresh(&mut self, _: &crate::cpu::CPU, _: &Interconnect) {}
 
     fn draw(
         &mut self,
         f: &mut Frame<CrosstermBackend<std::io::Stdout>>,
         chunk: Rect,
         _: &crate::cpu::CPU,
+        _: &Interconnect,
     ) {
         let text = &[Text::Raw(Cow::Borrowed(self.status))];
         let paragraph = Paragraph::new(text.iter())

@@ -1,5 +1,5 @@
 use super::{input::Input, status::Status};
-use crate::cpu::CPU;
+use crate::{cpu::CPU, memory_map::Interconnect};
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use std::io::Stdout;
 use tui::{
@@ -21,10 +21,16 @@ pub enum KeyAction {
 /// interact with them.
 pub trait Widget {
     /// Refreshes the content of the widget, readying it to be displayed with up-to-date information.
-    fn refresh(&mut self, cpu: &CPU);
+    fn refresh(&mut self, cpu: &CPU, memory: &Interconnect);
 
     /// Draws the widget on the screen, in the area specified by `chunk`.
-    fn draw(&mut self, f: &mut Frame<CrosstermBackend<Stdout>>, chunk: Rect, cpu: &CPU);
+    fn draw(
+        &mut self,
+        f: &mut Frame<CrosstermBackend<Stdout>>,
+        chunk: Rect,
+        cpu: &CPU,
+        memory: &Interconnect,
+    );
 
     /// Selects the widget, in order to toggle visual elements that shows that the widget
     /// is selected (title color, borders, ...)
@@ -48,7 +54,12 @@ pub trait Widget {
     /// `WidgetKind` returned is the same as the one from the widget called.
     ///
     /// The text input is usually then processed by using the `process_input` function.
-    fn handle_key(&mut self, _: KeyEvent, _: &mut CPU) -> Option<(WidgetKind, String)> {
+    fn handle_key(
+        &mut self,
+        _: KeyEvent,
+        _: &mut CPU,
+        _: &Interconnect,
+    ) -> Option<(WidgetKind, String)> {
         None
     }
 
@@ -62,7 +73,12 @@ pub trait Widget {
     /// widget a custom error message.
     ///
     /// If the input was processed successfully, the function returns `Ok(())`.
-    fn process_input(&mut self, _: String, _: &mut CPU) -> Result<(), Option<String>> {
+    fn process_input(
+        &mut self,
+        _: String,
+        _: &mut CPU,
+        _: &mut Interconnect,
+    ) -> Result<(), Option<String>> {
         Ok(())
     }
 
@@ -161,9 +177,9 @@ impl WidgetList {
     }
 
     /// Refreshes all the widgets in the list.
-    pub fn refresh(&mut self, cpu: &CPU) {
+    pub fn refresh(&mut self, cpu: &CPU, memory: &Interconnect) {
         self.widgets.iter_mut().for_each(|(_, w)| {
-            w.refresh(cpu);
+            w.refresh(cpu, memory);
         })
     }
 
@@ -203,7 +219,12 @@ impl WidgetList {
         }
     }
 
-    fn handle_input(&mut self, event: Event, cpu: &mut CPU) -> Option<()> {
+    fn handle_input(
+        &mut self,
+        event: Event,
+        cpu: &mut CPU,
+        memory: &mut Interconnect,
+    ) -> Option<()> {
         if self.input.is_selected() {
             let key = self.event_to_key(event);
             if let Some(s) = self.input.handle_input_key(key) {
@@ -212,7 +233,7 @@ impl WidgetList {
                         if let Some(k) = self.widget_callback {
                             match self
                                 .find(&k)
-                                .map(|i| self.widgets[i].1.process_input(s, cpu))
+                                .map(|i| self.widgets[i].1.process_input(s, cpu, memory))
                                 .unwrap_or_else(|| Err(Some(r#"Widget not found"#.to_string())))
                             {
                                 Ok(_) => {
@@ -220,7 +241,7 @@ impl WidgetList {
                                     self.input.deselect();
                                     self.input.set_title(String::new());
                                     if let Some(i) = self.find(&k) {
-                                        self.widgets[i].1.refresh(cpu)
+                                        self.widgets[i].1.refresh(cpu, memory)
                                     }
                                 }
                                 Err(e) => {
@@ -236,7 +257,7 @@ impl WidgetList {
                             self.input.deselect();
                             self.input.set_title(String::new());
                             if let Some(i) = self.find(&k) {
-                                self.widgets[i].1.refresh(cpu)
+                                self.widgets[i].1.refresh(cpu, memory)
                             }
                         }
                     }
@@ -338,9 +359,14 @@ impl WidgetList {
 
     /// Handles a keyboard input from the terminal, and dispatches it to the correct widget, if any.
     /// This function returns `true` if the program should quit.
-    pub fn handle_key(&mut self, key: Event, cpu: &mut CPU) -> KeyAction {
+    pub fn handle_key(
+        &mut self,
+        key: Event,
+        cpu: &mut CPU,
+        memory: &mut Interconnect,
+    ) -> KeyAction {
         let mut ret = KeyAction::Nothing;
-        self.handle_input(key, cpu)
+        self.handle_input(key, cpu, memory)
             .or_else(|| self.global_keys(key, &mut ret))
             .or_else(|| self.arrow_keys(key, cpu))
             .or_else(|| self.direct_widget_keys(key, cpu))
@@ -348,7 +374,7 @@ impl WidgetList {
                 let key = self.event_to_key(key);
                 if let Some((kind, string)) = {
                     self.selected()
-                        .map(|i| self.widgets[i].1.handle_key(key, cpu))
+                        .map(|i| self.widgets[i].1.handle_key(key, cpu, memory))
                         .unwrap_or(None)
                 } {
                     self.widget_callback = Some(kind);
@@ -365,7 +391,12 @@ impl WidgetList {
     // This might be beneficial for the user to be able to configure this, but it might
     // just be too much trouble...
     /// Draws all the widgets contained in the list, according to a hard-coded layout.
-    pub fn draw(&mut self, f: &mut Frame<CrosstermBackend<Stdout>>, cpu: &CPU) {
+    pub fn draw(
+        &mut self,
+        f: &mut Frame<CrosstermBackend<Stdout>>,
+        cpu: &CPU,
+        memory: &Interconnect,
+    ) {
         let top_bottom = Layout::default()
             .direction(Direction::Vertical)
             .constraints(
@@ -410,10 +441,10 @@ impl WidgetList {
             self.find(k)
                 .map(|i| self.widgets[i].1.as_mut())
                 .unwrap()
-                .draw(f, r, cpu);
+                .draw(f, r, cpu, memory);
         });
 
-        self.input.draw(f, bottom[0], cpu);
-        self.status.draw(f, bottom[1], cpu);
+        self.input.draw(f, bottom[0], cpu, memory);
+        self.status.draw(f, bottom[1], cpu, memory);
     }
 }

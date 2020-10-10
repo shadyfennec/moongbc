@@ -20,15 +20,14 @@
 *  source: https://gbdev.gg8.se/wiki/articles/Memory_Map
 */
 
-use crate::cpu::CPU;
+use std::{fmt, path::Path};
+
+use crate::{cartridge::Cartridge, gpu::GPU};
 use crate::{
-    cartridge::{Cartridge, MBCError},
-    gpu::GPU,
+    cartridge::MBCError,
+    register::{Reg8, Registers},
 };
-
-use crate::{register::Reg16, BitField, Dst, ReadWriteError, ReadWriteErrorKind, Src};
-
-use std::fmt;
+use crate::{register::Reg16, BitField};
 
 pub const ROM_START: u16 = 0x0000;
 pub const ROM_END: u16 = 0x7FFF;
@@ -70,150 +69,131 @@ pub const HRAM_END: u16 = 0xFFFE;
 pub const HRAM_SIZE: usize = (HRAM_END - HRAM_START + 1) as usize;
 
 pub const EI_ADDRESS: u16 = 0xFFFF;
-
-/// A location in memory, indexed by a 16-bit value.
 #[derive(Debug, Copy, Clone)]
-pub struct Mem<S: Src<u16>>(pub S);
-
-impl<S: Src<u16>> Src<u8> for Mem<S> {
-    fn try_read(&self, cpu: &CPU) -> Result<u8, ReadWriteError> {
-        let addr = self.0.read(cpu);
-        cpu.handle_io_read(addr);
-        cpu.memory_map
-            .read(addr)
-            .map_err(|e| ReadWriteError(ReadWriteErrorKind::MemoryError(e)))
-    }
+pub enum MemIdx {
+    Imm16,
+    Imm8,
+    Reg16(Reg16),
+    Reg8(Reg8),
+    Direct(u16),
 }
 
-impl<S: Src<u16>> Dst<u8> for Mem<S> {
-    fn try_write(&self, cpu: &mut CPU, value: u8) -> Result<(), ReadWriteError> {
-        let addr = self.0.read(cpu);
-        cpu.handle_io_write(addr, value);
-        cpu.memory_map
-            .write(addr, value)
-            .map_err(|e| ReadWriteError(ReadWriteErrorKind::MemoryError(e)))
-    }
-}
-
-impl<S: Src<u16>> Dst<u16> for Mem<S> {
-    fn try_write(&self, cpu: &mut CPU, value: u16) -> Result<(), ReadWriteError> {
-        let high = (value >> 8) as u8;
-        let low = (value & 0xFF) as u8;
-
-        cpu.memory_map
-            .write(self.0.read(cpu), low)
-            .and_then(|_| cpu.memory_map.write(self.0.read(cpu) + 1, high))
-            .map_err(|e| ReadWriteError(ReadWriteErrorKind::MemoryError(e)))
-    }
-}
-
-impl fmt::Display for Mem<u16> {
+impl fmt::Display for MemIdx {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "(0x{:04x})", self.0)
-    }
-}
-
-impl fmt::Display for Mem<Reg16> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "({})", self.0)
-    }
-}
-
-/// A special location in memory, able to retrieve a 16-bit value
-pub struct Mem16<S: Src<u16>>(pub S);
-
-impl<S: Src<u16>> Src<u16> for Mem16<S> {
-    fn try_read(&self, cpu: &CPU) -> Result<u16, ReadWriteError> {
-        /*
-        let low = cpu.memory_map.read(self.0.read(cpu)).map(|v| v as u16);
-        let high = cpu.memory_map.read(self.0.read(cpu) + 1).map(|v| v as u16);
-
-        match (low, high) {
-            (Ok(low), Ok(high)) => Ok((high << 8) | low),
-            _ => None,
+        match self {
+            MemIdx::Imm16 => write!(f, "(Imm16)"),
+            MemIdx::Imm8 => write!(f, "(0x{:04x} + Imm8)", IO_START),
+            MemIdx::Reg16(r) => write!(f, "({})", r),
+            MemIdx::Reg8(r) => write!(f, "(0x{:04x} + {}", IO_START, r),
+            MemIdx::Direct(addr) => write!(f, "(0x{:04x})", addr),
         }
-        */
-        cpu.memory_map
-            .read(self.0.read(cpu))
-            .map(|v| v as u16)
-            .and_then(|low| {
-                cpu.memory_map
-                    .read(self.0.read(cpu) + 1)
-                    .map(|high| (high as u16) << 8 | low)
-            })
-            .map_err(|e| ReadWriteError(ReadWriteErrorKind::MemoryError(e)))
     }
 }
 
-impl<S: Src<u16>> Dst<u16> for Mem16<S> {
-    fn try_write(&self, cpu: &mut CPU, value: u16) -> Result<(), ReadWriteError> {
-        let high = (value >> 8) as u8;
-        let low = (value & 0xFF) as u8;
-
-        cpu.memory_map
-            .write(self.0.read(cpu), low)
-            .and_then(|_| cpu.memory_map.write(self.0.read(cpu) + 1, high))
-            .map_err(|e| ReadWriteError(ReadWriteErrorKind::MemoryError(e)))
-    }
-}
-
-/// Describes a memory location inside the IO registers range,
-/// between `xFF00` and `xFF7F`. It is indexed by a single
-/// 8-bit value.
 #[derive(Debug, Copy, Clone)]
-pub struct IOMem<S: Src<u8>>(pub S);
+pub struct Mem(pub MemIdx);
 
-impl<S: Src<u8>> Src<u8> for IOMem<S> {
-    fn try_read(&self, cpu: &CPU) -> Result<u8, ReadWriteError> {
-        let offset = self.0.read(cpu);
-        let base = IO_START;
+impl Mem {
+    pub fn read(&self, memory: &Interconnect, registers: &Registers) -> u8 {
+        let addr: u16 = match self.0 {
+            MemIdx::Imm16 => Imm16.read(memory, registers),
+            MemIdx::Imm8 => IO_START + (Imm8.read(memory, registers) as u16),
+            MemIdx::Reg16(r) => r.read(registers),
+            MemIdx::Reg8(r) => IO_START + r.read(registers) as u16,
+            MemIdx::Direct(addr) => addr,
+        };
+        memory.read(addr)
+    }
 
-        let addr = base + offset as u16;
-        cpu.handle_io_read(addr);
-        cpu.memory_map
-            .read(addr)
-            .map_err(|e| ReadWriteError(ReadWriteErrorKind::MemoryError(e)))
+    pub fn write(&self, memory: &mut Interconnect, registers: &Registers, value: u8) {
+        let addr = match self.0 {
+            MemIdx::Imm16 => Imm16.read(memory, registers),
+            MemIdx::Imm8 => IO_START + Imm8.read(memory, registers) as u16,
+            MemIdx::Reg16(r) => r.read(registers),
+            MemIdx::Reg8(r) => IO_START + r.read(registers) as u16,
+            MemIdx::Direct(addr) => addr,
+        };
+        memory.write(addr, value);
     }
 }
 
-impl<S: Src<u8>> Dst<u8> for IOMem<S> {
-    fn try_write(&self, cpu: &mut CPU, value: u8) -> Result<(), ReadWriteError> {
-        let offset = self.0.read(cpu);
-        let base = IO_START;
-
-        let addr = base + offset as u16;
-        cpu.handle_io_write(addr, value);
-        cpu.memory_map
-            .write(addr, value)
-            .map_err(|e| ReadWriteError(ReadWriteErrorKind::MemoryError(e)))
-    }
-}
-
-#[derive(Debug)]
-/// Represents an error that can occur during a memory operation
-pub struct MemoryError(pub MemoryErrorKind);
-
-#[derive(Debug)]
-/// The different kinds of errors that can occur during a memory operation
-pub enum MemoryErrorKind {
-    /// An error occured in the MBC
-    MBCError(MBCError),
-    /// The address specified is out of bounds
-    OutOfBounds,
-    /// A write operation was issued on a read-only memory region
-    ReadOnly,
-    /// Special error used for the unused data range `0xFEA0` to `0xFEFF`
-    UnusedRange,
-}
-
-impl fmt::Display for MemoryError {
+impl fmt::Display for Mem {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.0 {
-            MemoryErrorKind::MBCError(e) => write!(f, "MBC error: {}", e),
-            MemoryErrorKind::OutOfBounds => write!(f, "Address out of bounds"),
-            MemoryErrorKind::ReadOnly => write!(f, "Write issued on read-only address"),
-            MemoryErrorKind::UnusedRange => write!(f, "Unused memory region"),
+            MemIdx::Imm16 => write!(f, "(Imm16)"),
+            MemIdx::Imm8 => write!(f, "(0x{:04x} + Imm8)", IO_START),
+            MemIdx::Reg16(r) => write!(f, "({})", r),
+            MemIdx::Reg8(r) => write!(f, "(0x{:04x} + {}", IO_START, r),
+            MemIdx::Direct(addr) => write!(f, "(0x{:04x})", addr),
         }
+    }
+}
+
+#[derive(Debug, Copy, Clone)]
+pub struct Mem16(pub MemIdx);
+
+impl Mem16 {
+    pub fn read(&self, memory: &Interconnect, registers: &Registers) -> u16 {
+        let addr = match self.0 {
+            MemIdx::Imm16 => Imm16.read(memory, registers),
+            MemIdx::Imm8 => IO_START + Imm8.read(memory, registers) as u16,
+            MemIdx::Reg16(r) => r.read(registers),
+            MemIdx::Reg8(r) => IO_START + r.read(registers) as u16,
+            MemIdx::Direct(addr) => addr,
+        };
+
+        let low = memory.read(addr);
+        let high = memory.read(addr + 1);
+        (high as u16) << 8 | (low as u16)
+    }
+
+    pub fn write(&self, memory: &mut Interconnect, registers: &Registers, value: u16) {
+        let addr = match self.0 {
+            MemIdx::Imm16 => Imm16.read(memory, registers),
+            MemIdx::Imm8 => IO_START + Imm8.read(memory, registers) as u16,
+            MemIdx::Reg16(r) => r.read(registers),
+            MemIdx::Reg8(r) => IO_START + r.read(registers) as u16,
+            MemIdx::Direct(addr) => addr,
+        };
+        let high = (value >> 8) as u8;
+        let low = (value & 0xFF) as u8;
+
+        memory.write(addr, low);
+        memory.write(addr + 1, high);
+    }
+}
+
+/// An immediate value, usually represented by a byte after an instruction.
+#[derive(Debug, Copy, Clone)]
+pub struct Imm8;
+
+impl Imm8 {
+    pub fn read(&self, memory: &Interconnect, registers: &Registers) -> u8 {
+        memory.read(Reg16::PC.read(registers) + 1)
+    }
+}
+
+// An immediate 16-bit value, usually represented by two bytes after an instruction.
+#[derive(Debug, Copy, Clone)]
+pub struct Imm16;
+
+impl Imm16 {
+    pub fn read(&self, memory: &Interconnect, registers: &Registers) -> u16 {
+        let pc = Reg16::PC.read(registers);
+        let low = memory.read(pc + 1);
+        let high = memory.read(pc + 2);
+
+        ((high as u16) << 8) | (low as u16)
+    }
+}
+
+/// A signed immediate value, usually represented by two bytes after an instruction.
+#[derive(Debug, Copy, Clone)]
+pub struct SignedImm8;
+
+impl SignedImm8 {
+    pub fn read(&self, memory: &Interconnect, registers: &Registers) -> i8 {
+        memory.read(Reg16::PC.read(registers) + 1) as i8
     }
 }
 
@@ -222,7 +202,7 @@ impl fmt::Display for MemoryError {
 /// memory and display the bootup sequence (the Nintendo logo, for example).
 /// At startup, the cartridge ROM isn't available, as this boot ROM occupies
 /// the memory map range usually reserved for ROM bank 0.
-/// It can be disabled by writing to `$0xFF50`, in which case the cartridge ROM
+/// It can be disabled by writing to `xFF50`, in which case the cartridge ROM
 /// can be accessed.
 #[derive(Default)]
 struct BootstrapRom {
@@ -320,10 +300,32 @@ impl HRAM {
     }
 }
 
+#[derive(Debug)]
+/// Represents an error that can occur during a memory operation
+pub struct MemoryError(pub MemoryErrorKind);
+
+#[derive(Debug)]
+/// The different kinds of errors that can occur during a memory operation
+pub enum MemoryErrorKind {
+    /// An error occured in the MBC
+    MBC(MBCError),
+    /// The address specified is out of bounds
+    OutOfBounds,
+}
+
+impl fmt::Display for MemoryError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.0 {
+            MemoryErrorKind::MBC(e) => write!(f, "MBC error: {}", e),
+            MemoryErrorKind::OutOfBounds => write!(f, "Address out of bounds"),
+        }
+    }
+}
+
 /// Describes the memory map, responsible for dispatching
 /// any address in the address space to the correct location
 /// in the system.
-pub struct MemoryMap {
+pub struct Interconnect {
     cartridge: Option<Cartridge>,
     bootstrap: BootstrapRom,
     boot_flag: bool,
@@ -334,17 +336,17 @@ pub struct MemoryMap {
     interrupt_enable: BitField,
 }
 
-impl Default for MemoryMap {
+impl Default for Interconnect {
     fn default() -> Self {
-        MemoryMap::new()
+        Interconnect::new()
     }
 }
 
-impl MemoryMap {
+impl Interconnect {
     /// Creates a new MemoryMap, which in turns initializes the other memory
     /// locations.
-    pub fn new() -> MemoryMap {
-        MemoryMap {
+    pub fn new() -> Interconnect {
+        Interconnect {
             cartridge: None,
             bootstrap: BootstrapRom::new(),
             boot_flag: true,
@@ -357,8 +359,8 @@ impl MemoryMap {
     }
 
     /// Sets the cartridge ROM, making it available for IO.
-    pub fn set_cartridge(&mut self, cartridge: Cartridge) {
-        self.cartridge = Some(cartridge);
+    pub fn set_cartridge<P: AsRef<Path>>(&mut self, path: P) {
+        self.cartridge = Some(Cartridge::load(path).unwrap());
     }
 
     /// Returns the name of the location pointed to by an address.
@@ -377,7 +379,30 @@ impl MemoryMap {
         }
     }
 
-    fn read(&self, addr: u16) -> Result<u8, MemoryError> {
+    pub fn read(&self, addr: u16) -> u8 {
+        match addr {
+            ROM_START..=0x00FF | 0x0200..=ROM_END | ERAM_START..=ERAM_END => {
+                if self.boot_flag && addr < self.bootstrap.len() as u16 {
+                    self.bootstrap.read(addr).unwrap()
+                } else {
+                    self.cartridge.as_ref().unwrap().read(addr).unwrap()
+                }
+            }
+            CARTRIDGE_HEADER_START..=CARTRIDGE_HEADER_END => {
+                self.cartridge.as_ref().unwrap().read(addr).unwrap()
+            }
+            VRAM_START..=VRAM_END => self.gpu.read(addr),
+            WRAM_START..=WRAM_END => self.wram.read(addr),
+            ECHO_START..=ECHO_END => self.wram.read(addr),
+            OAM_START..=OAM_END => self.gpu.read(addr),
+            UNUSED_START..=UNUSED_END => 0,
+            IO_START..=IO_END => self.io_registers[(addr - IO_START) as usize],
+            HRAM_START..=HRAM_END => self.hram.read(addr),
+            EI_ADDRESS => self.interrupt_enable.into(),
+        }
+    }
+
+    pub fn try_read(&self, addr: u16) -> Result<u8, MemoryError> {
         match addr {
             ROM_START..=0x00FF | 0x0200..=ROM_END | ERAM_START..=ERAM_END => {
                 if self.boot_flag && addr < self.bootstrap.len() as u16 {
@@ -389,7 +414,7 @@ impl MemoryMap {
                         .as_ref()
                         .unwrap()
                         .read(addr)
-                        .map_err(|e| MemoryError(MemoryErrorKind::MBCError(e)))
+                        .map_err(|e| MemoryError(MemoryErrorKind::MBC(e)))
                 }
             }
             CARTRIDGE_HEADER_START..=CARTRIDGE_HEADER_END => self
@@ -397,7 +422,8 @@ impl MemoryMap {
                 .as_ref()
                 .unwrap()
                 .read(addr)
-                .map_err(|e| MemoryError(MemoryErrorKind::MBCError(e))),
+                .map_err(|e| MemoryError(MemoryErrorKind::MBC(e))),
+
             VRAM_START..=VRAM_END => Ok(self.gpu.read(addr)),
             WRAM_START..=WRAM_END => Ok(self.wram.read(addr)),
             ECHO_START..=ECHO_END => Ok(self.wram.read(addr)),
@@ -409,39 +435,20 @@ impl MemoryMap {
         }
     }
 
-    fn write(&mut self, addr: u16, value: u8) -> Result<(), MemoryError> {
+    pub fn write(&mut self, addr: u16, value: u8) {
         match addr {
-            ROM_START..=ROM_END | ERAM_START..=ERAM_END => self
-                .cartridge
-                .as_mut()
-                .unwrap()
-                .write(addr, value)
-                .map_err(|e| MemoryError(MemoryErrorKind::MBCError(e))),
-            VRAM_START..=VRAM_END => {
-                self.gpu.write(addr, value);
-                Ok(())
+            ROM_START..=ROM_END | ERAM_START..=ERAM_END => {
+                self.cartridge.as_mut().unwrap().write(addr, value).unwrap()
             }
-            WRAM_START..=WRAM_END | ECHO_START..=ECHO_END => {
-                self.wram.write(addr, value);
-                Ok(())
-            }
+            VRAM_START..=VRAM_END => self.gpu.write(addr, value),
+            WRAM_START..=WRAM_END | ECHO_START..=ECHO_END => self.wram.write(addr, value),
             OAM_START..=OAM_END => {
                 self.gpu.write(addr, value);
-                Ok(())
             }
-            UNUSED_START..=UNUSED_END => Ok(()),
-            IO_START..=IO_END => {
-                self.io_registers[(addr - IO_START) as usize] = value;
-                Ok(())
-            }
-            HRAM_START..=HRAM_END => {
-                self.hram.write(addr, value);
-                Ok(())
-            }
-            EI_ADDRESS => {
-                self.interrupt_enable.write(value);
-                Ok(())
-            }
+            UNUSED_START..=UNUSED_END => {}
+            IO_START..=IO_END => self.io_registers[(addr - IO_START) as usize] = value,
+            HRAM_START..=HRAM_END => self.hram.write(addr, value),
+            EI_ADDRESS => self.interrupt_enable.write(value),
         }
     }
 }

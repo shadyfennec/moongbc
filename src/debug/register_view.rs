@@ -1,8 +1,8 @@
 use crate::{
     cpu::CPU,
     debug::widget::Widget,
+    memory_map::Interconnect,
     register::{Flag, Reg16, Registers},
-    Src,
 };
 use std::{borrow::Cow, io::Stdout};
 use tui::{
@@ -25,7 +25,7 @@ pub struct RegisterView<'a> {
 }
 
 impl<'a> Widget for RegisterView<'a> {
-    fn refresh(&mut self, cpu: &CPU) {
+    fn refresh(&mut self, cpu: &CPU, _: &Interconnect) {
         let space = Text::Raw(Cow::Borrowed("  "));
 
         let registers = vec![
@@ -47,7 +47,7 @@ impl<'a> Widget for RegisterView<'a> {
             })
             .collect::<Vec<_>>();
 
-        let pc = Reg16::PC.read(cpu);
+        let pc = Reg16::PC.read(&cpu.registers);
         let pc = Text::Raw(Cow::Owned(format!("PC: 0x{:04x}\n", pc)));
 
         self.text = text
@@ -76,10 +76,16 @@ impl<'a> Widget for RegisterView<'a> {
         self.flags = flags;
     }
 
-    fn draw(&mut self, f: &mut Frame<CrosstermBackend<Stdout>>, chunk: Rect, cpu: &CPU) {
+    fn draw(
+        &mut self,
+        f: &mut Frame<CrosstermBackend<Stdout>>,
+        chunk: Rect,
+        cpu: &CPU,
+        memory: &Interconnect,
+    ) {
         if !self.init {
             self.init = true;
-            self.refresh(cpu);
+            self.refresh(cpu, memory);
         }
 
         let chunks = Layout::default()
@@ -133,7 +139,7 @@ impl<'a> RegisterView<'a> {
     }
 
     fn get_register(&mut self, cpu: &CPU, reg: Reg16, line_break: bool) -> Text<'a> {
-        let value = reg.read(cpu);
+        let value = reg.read(&cpu.registers);
         let line_break = if line_break { "\n" } else { "" };
 
         if value != self.registers.get_16(&reg) {
@@ -151,7 +157,7 @@ impl<'a> RegisterView<'a> {
     }
 
     fn get_flag(&mut self, cpu: &CPU, flag: Flag, line_break: bool) -> Text<'a> {
-        let value = flag.read(cpu);
+        let value = flag.read(&cpu.registers);
         let line_break = if line_break { "\n" } else { "" };
 
         if value != self.registers.get_flag(&flag) {

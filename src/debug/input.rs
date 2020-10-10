@@ -1,4 +1,4 @@
-use crate::{cpu::CPU, debug::widget::Widget};
+use crate::{cpu::CPU, debug::widget::Widget, memory_map::Interconnect};
 use crossterm::event::{KeyCode, KeyEvent};
 use std::{borrow::Cow, io::Stdout};
 use tui::{
@@ -91,8 +91,15 @@ pub struct Input {
 }
 
 impl Widget for Input {
-    fn refresh(&mut self, _: &CPU) {}
-    fn draw(&mut self, f: &mut Frame<CrosstermBackend<Stdout>>, chunk: Rect, _: &CPU) {
+    fn refresh(&mut self, _: &CPU, _: &Interconnect) {}
+
+    fn draw(
+        &mut self,
+        f: &mut Frame<CrosstermBackend<Stdout>>,
+        chunk: Rect,
+        _: &CPU,
+        _: &Interconnect,
+    ) {
         let text = self.input.to_text(self.selected);
 
         let title = if self.error {

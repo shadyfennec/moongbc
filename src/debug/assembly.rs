@@ -3,10 +3,9 @@ use crate::{
     cpu::CPU,
     debug::{util::FromHexString, widget::Widget},
     disassembly::{Disassembler, InstructionWindow},
-    memory_map::{Mem, Mem16},
+    memory_map::{Interconnect, Mem, Mem16, MemIdx},
     opcode::{Decoder, Opcode},
     register::Reg16,
-    Src,
 };
 use crossterm::event::{KeyCode, KeyEvent};
 use std::{borrow::Cow, io::Stdout};
@@ -35,14 +34,14 @@ pub struct Assembly {
 }
 
 impl Widget for Assembly {
-    fn refresh(&mut self, cpu: &CPU) {
-        let pc = Reg16::PC.read(cpu);
+    fn refresh(&mut self, cpu: &CPU, memory: &Interconnect) {
+        let pc = Reg16::PC.read(&cpu.registers);
         if self.old_pc != pc {
             self.old_pc = pc;
             self.pos = pc;
         }
 
-        let (before, after) = Disassembler::new().surrounding_sizes(cpu, self.pos);
+        let (before, after) = Disassembler::new().surrounding_sizes(cpu, memory, self.pos);
         self.sizes[0] = before;
         self.sizes[1] = after;
 
@@ -51,17 +50,24 @@ impl Widget for Assembly {
             self.height - self.height / 2,
             self.pos,
             cpu,
+            memory,
         );
 
         self.instruction_window = Some(instruction_window);
     }
 
-    fn draw(&mut self, f: &mut Frame<CrosstermBackend<Stdout>>, chunk: Rect, cpu: &CPU) {
+    fn draw(
+        &mut self,
+        f: &mut Frame<CrosstermBackend<Stdout>>,
+        chunk: Rect,
+        cpu: &CPU,
+        memory: &Interconnect,
+    ) {
         self.height = chunk.height as usize;
 
         if !self.init {
             self.init = true;
-            self.refresh(cpu);
+            self.refresh(cpu, memory);
         }
 
         if let Some(instruction_window) = &self.instruction_window {
@@ -86,7 +92,7 @@ impl Widget for Assembly {
                         Style::default().fg(fg)
                     };
 
-                    let instr = match o.try_display(cpu, Some(*a)) {
+                    let instr = match o.try_display(&cpu.registers, memory, Some(*a)) {
                         Ok(s) => s,
                         Err(s) => s,
                     };
@@ -121,7 +127,12 @@ impl Widget for Assembly {
         self.selected
     }
 
-    fn handle_key(&mut self, key: KeyEvent, cpu: &mut CPU) -> Option<(WidgetKind, String)> {
+    fn handle_key(
+        &mut self,
+        key: KeyEvent,
+        cpu: &mut CPU,
+        memory: &Interconnect,
+    ) -> Option<(WidgetKind, String)> {
         match key.code {
             KeyCode::Down => {
                 self.pos = self.pos.saturating_add(self.sizes[1] as u16);
@@ -136,21 +147,25 @@ impl Widget for Assembly {
                 Some((WidgetKind::Assembly, String::from("Go to instruction:")))
             }
             KeyCode::Char('j') => {
-                let opcode = Decoder::decode_with_context(cpu, self.pos);
+                let opcode = Decoder::decode_with_context(&cpu.registers, memory, self.pos);
 
                 if let Some(opcode) = opcode {
                     match opcode {
                         Opcode::CALL(_, _) => {
-                            self.pos = Mem16(self.pos + 1).read(cpu);
+                            self.pos =
+                                Mem16(MemIdx::Direct(self.pos + 1)).read(memory, &cpu.registers);
                         }
                         Opcode::JP(_, _) => {
-                            self.pos = Mem16(self.pos + 1).read(cpu);
+                            self.pos =
+                                Mem16(MemIdx::Direct(self.pos + 1)).read(memory, &cpu.registers);
                         }
                         Opcode::JPHL => {
-                            self.pos = Reg16::HL.read(cpu);
+                            self.pos = Reg16::HL.read(&cpu.registers);
                         }
-                        Opcode::JR(_, _) => {
-                            let offset = Mem(self.pos + 1).read(cpu) as i8;
+                        Opcode::JR(_) => {
+                            let offset = Mem(MemIdx::Direct(self.pos + 1))
+                                .read(memory, &cpu.registers)
+                                as i8;
                             self.pos = if offset < 0 {
                                 self.pos.saturating_sub(((-offset) - 1) as u16)
                             } else {
@@ -167,12 +182,17 @@ impl Widget for Assembly {
         }
     }
 
-    fn process_input(&mut self, input: String, cpu: &mut CPU) -> Result<(), Option<String>> {
+    fn process_input(
+        &mut self,
+        input: String,
+        cpu: &mut CPU,
+        memory: &mut Interconnect,
+    ) -> Result<(), Option<String>> {
         if let Some(command) = &self.command {
             match command {
                 Command::Goto => match u16::from_hex_string(input) {
                     Ok(addr) => {
-                        if Disassembler::new().check_address(cpu, addr) {
+                        if Disassembler::new().check_address(cpu, memory, addr) {
                             self.pos = addr;
                             Ok(())
                         } else {

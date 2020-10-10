@@ -1,7 +1,6 @@
-use crate::cpu::CPU;
 use crate::opcode::Opcode;
 use crate::register::Reg16;
-use crate::Src;
+use crate::{cpu::CPU, memory_map::Interconnect};
 use std::collections::VecDeque;
 
 /// A window of instructions, mainly used by the disassembler
@@ -18,10 +17,16 @@ impl InstructionWindow {
     /// and `after` instructions after. If there are not enough instructions to accomodate for
     /// the `before` and `after` instructions, it will add more instructions to either of the
     /// ends so that the number of instructions is always `before + after`.
-    pub fn build(before: usize, after: usize, cursor: u16, cpu: &CPU) -> InstructionWindow {
+    pub fn build(
+        before: usize,
+        after: usize,
+        cursor: u16,
+        cpu: &CPU,
+        memory: &Interconnect,
+    ) -> InstructionWindow {
         let disassembler = Disassembler::new();
 
-        let instructions = disassembler.find_window(cpu, before, after, cursor);
+        let instructions = disassembler.find_window(cpu, memory, before, after, cursor);
 
         let cursor = instructions
             .iter()
@@ -33,7 +38,7 @@ impl InstructionWindow {
         let pc = instructions
             .iter()
             .enumerate()
-            .find(|(_, (a, _))| *a == Reg16::PC.read(cpu))
+            .find(|(_, (a, _))| *a == Reg16::PC.read(&cpu.registers))
             .map(|(i, _)| i);
 
         InstructionWindow {
@@ -92,14 +97,21 @@ impl Disassembler {
         Disassembler {}
     }
 
-    fn find_window(&self, cpu: &CPU, before: usize, after: usize, target: u16) -> Vec<Line> {
+    fn find_window(
+        &self,
+        cpu: &CPU,
+        memory: &Interconnect,
+        before: usize,
+        after: usize,
+        target: u16,
+    ) -> Vec<Line> {
         let mut pc = 0;
         let mut queue = Queue::new(before + after + 1);
 
         let mut found = false;
         let mut counter = after + 1;
 
-        for opcode in cpu.preview_iterator(0) {
+        for opcode in cpu.preview_iterator(0, memory) {
             if found {
                 counter = counter.saturating_sub(1);
             }
@@ -124,10 +136,10 @@ impl Disassembler {
 
     /// Returns whether or not the specified address is a valid
     /// address, assuming the alignments starts at 0.
-    pub fn check_address(&self, cpu: &CPU, address: u16) -> bool {
+    pub fn check_address(&self, cpu: &CPU, memory: &Interconnect, address: u16) -> bool {
         let mut pointer = 0;
 
-        for opcode in cpu.preview_iterator(0) {
+        for opcode in cpu.preview_iterator(0, memory) {
             if pointer >= address {
                 break;
             }
@@ -141,9 +153,9 @@ impl Disassembler {
     /// Returns the size of the instruction located at the specified address,
     /// and the one before it. If the specified address is 0, it returns instead
     /// the size of the first and second instruction.
-    pub fn surrounding_sizes(&self, cpu: &CPU, pc: u16) -> (usize, usize) {
+    pub fn surrounding_sizes(&self, cpu: &CPU, memory: &Interconnect, pc: u16) -> (usize, usize) {
         let result = self
-            .find_window(cpu, 1, 0, pc)
+            .find_window(cpu, memory, 1, 0, pc)
             .iter()
             .map(|(_, o)| o.size())
             .collect::<Vec<_>>();

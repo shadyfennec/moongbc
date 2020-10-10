@@ -1,43 +1,7 @@
-use crate::cpu::CPU;
-use crate::memory_map::Mem;
-use crate::{BitField, Dst, ReadWriteError, Src};
+use crate::BitField;
 
 use std::fmt;
 use std::iter::repeat;
-
-/// An immediate value, usually represented by a byte after an instruction.
-#[derive(Debug, Copy, Clone)]
-pub struct Imm8;
-
-impl Src<u8> for Imm8 {
-    fn try_read(&self, cpu: &CPU) -> Result<u8, ReadWriteError> {
-        Mem(Reg16::PC.read(cpu) + 1).try_read(cpu)
-    }
-}
-
-// An immediate 16-bit value, usually represented by two bytes after an instruction.
-#[derive(Debug, Copy, Clone)]
-pub struct Imm16;
-
-impl Src<u16> for Imm16 {
-    fn try_read(&self, cpu: &CPU) -> Result<u16, ReadWriteError> {
-        Mem(Reg16::PC.read(cpu) + 1).try_read(cpu).and_then(|low| {
-            Mem(Reg16::PC.read(cpu) + 2)
-                .try_read(cpu)
-                .map(|high| ((high as u16) << 8) | low as u16)
-        })
-    }
-}
-
-/// A signed immediate value, usually represented by two bytes after an instruction.
-#[derive(Debug, Copy, Clone)]
-pub struct SignedImm8;
-
-impl Src<i8> for SignedImm8 {
-    fn try_read(&self, cpu: &CPU) -> Result<i8, ReadWriteError> {
-        Imm8.try_read(cpu).map(|i| i as i8)
-    }
-}
 
 /// An 8-bit register, representing either a high or low part of the 16-bit registers.
 #[derive(Debug, Copy, Clone)]
@@ -81,18 +45,21 @@ impl Reg8 {
             Reg8::C | Reg8::E | Reg8::L | Reg8::F => 0,
         }
     }
-}
 
-impl Src<u8> for Reg8 {
-    fn try_read(&self, cpu: &CPU) -> Result<u8, ReadWriteError> {
-        Ok(cpu.registers.get_8(self))
+    pub fn read(&self, registers: &Registers) -> u8 {
+        registers.get_8(self)
     }
-}
 
-impl Dst<u8> for Reg8 {
-    fn try_write(&self, cpu: &mut CPU, value: u8) -> Result<(), ReadWriteError> {
-        cpu.registers.set_8(self, value);
-        Ok(())
+    pub fn write(&self, registers: &mut Registers, value: u8) {
+        registers.set_8(self, value);
+    }
+
+    pub fn add(&self, registers: &mut Registers, value: u8) {
+        registers.set_8(self, registers.get_8(self).wrapping_add(value));
+    }
+
+    pub fn sub(&self, registers: &mut Registers, value: u8) {
+        registers.set_8(self, registers.get_8(self).wrapping_sub(value));
     }
 }
 
@@ -134,18 +101,21 @@ impl Reg16 {
             Reg16::PC => 5,
         }
     }
-}
 
-impl Src<u16> for Reg16 {
-    fn try_read(&self, cpu: &CPU) -> Result<u16, ReadWriteError> {
-        Ok(cpu.registers.get_16(self))
+    pub fn read(&self, registers: &Registers) -> u16 {
+        registers.get_16(self)
     }
-}
 
-impl Dst<u16> for Reg16 {
-    fn try_write(&self, cpu: &mut CPU, value: u16) -> Result<(), ReadWriteError> {
-        cpu.registers.set_16(self, value);
-        Ok(())
+    pub fn write(&self, registers: &mut Registers, value: u16) {
+        registers.set_16(self, value);
+    }
+
+    pub fn add(&self, registers: &mut Registers, value: u16) {
+        registers.set_16(self, registers.get_16(self).wrapping_add(value));
+    }
+
+    pub fn sub(&self, registers: &mut Registers, value: u16) {
+        registers.set_16(self, registers.get_16(self).wrapping_sub(value));
     }
 }
 
@@ -181,20 +151,16 @@ impl Flag {
             Flag::C => 4,
         }
     }
-}
 
-impl Src<bool> for Flag {
-    fn try_read(&self, cpu: &CPU) -> Result<bool, ReadWriteError> {
-        let flags: BitField = Reg8::F.read(cpu).into();
-        Ok(flags.get(self.bit()))
+    pub fn read(&self, registers: &Registers) -> bool {
+        let flags: BitField = Reg8::F.read(registers).into();
+        flags.get(self.bit())
     }
-}
 
-impl Dst<bool> for Flag {
-    fn try_write(&self, cpu: &mut CPU, value: bool) -> Result<(), ReadWriteError> {
-        let mut flags: BitField = Reg8::F.read(cpu).into();
+    pub fn write(&self, registers: &mut Registers, value: bool) {
+        let mut flags: BitField = Reg8::F.read(registers).into();
         flags.set(self.bit(), value);
-        Reg8::F.try_write(cpu, flags.into())
+        Reg8::F.write(registers, flags.into())
     }
 }
 
@@ -205,6 +171,38 @@ impl fmt::Display for Flag {
             Flag::N => write!(f, "N"),
             Flag::H => write!(f, "H"),
             Flag::C => write!(f, "C"),
+        }
+    }
+}
+
+/// Describes a condition, used in jumps, calls and returns.
+/// It can be read to get the boolean value of the condition.
+#[derive(Debug, Copy, Clone)]
+pub enum Condition {
+    NZ,
+    NC,
+    Z,
+    C,
+}
+
+impl Condition {
+    pub fn read(&self, registers: &Registers) -> bool {
+        match self {
+            Condition::NZ => !Flag::Z.read(registers),
+            Condition::NC => !Flag::C.read(registers),
+            Condition::Z => Flag::Z.read(registers),
+            Condition::C => Flag::C.read(registers),
+        }
+    }
+}
+
+impl fmt::Display for Condition {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Condition::NZ => write!(f, "NZ"),
+            Condition::NC => write!(f, "NC"),
+            Condition::Z => write!(f, "Z"),
+            Condition::C => write!(f, "C"),
         }
     }
 }

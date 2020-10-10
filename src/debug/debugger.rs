@@ -5,6 +5,7 @@ use super::{
 use crate::{
     cpu::CPU,
     debug::widget::{WidgetKind, WidgetList},
+    memory_map::Interconnect,
 };
 use crossterm::{
     event::{self, EnableMouseCapture, Event as CEvent},
@@ -30,15 +31,17 @@ enum Event<I> {
 /// The terminal-based graphic debugger for the GMB emulator.
 pub struct Debugger {
     cpu: CPU,
+    memory: Interconnect,
     widgets: WidgetList,
     running: bool,
 }
 
 impl Debugger {
     /// Creates a new debugger from a `CPU`.
-    pub fn new(cpu: CPU) -> Debugger {
+    pub fn new(cpu: CPU, memory: Interconnect) -> Debugger {
         Debugger {
             cpu,
+            memory,
             widgets: WidgetList::new(),
             running: false,
         }
@@ -48,12 +51,12 @@ impl Debugger {
     pub fn refresh(&mut self) {
         self.widgets
             .set_status(if self.running { "Running" } else { "Idle" });
-        self.widgets.refresh(&self.cpu);
+        self.widgets.refresh(&self.cpu, &self.memory);
     }
 
     fn draw(&mut self, terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> std::io::Result<()> {
         terminal.draw(|mut f| {
-            self.widgets.draw(&mut f, &self.cpu);
+            self.widgets.draw(&mut f, &self.cpu, &self.memory);
         })
     }
 
@@ -127,19 +130,16 @@ impl Debugger {
             };
 
             if self.running {
-                self.running = match self.cpu.step_check() {
-                    Ok(r) => !r,
-                    Err(e) => {
-                        self.widgets.display_error(format!("{}", e));
-                        false
-                    }
-                };
+                self.running = !self.cpu.step_check(&mut self.memory);
             }
 
             if let Some(e) = event {
                 match e {
                     Event::Input(event) => {
-                        match self.widgets.handle_key(event, &mut self.cpu) {
+                        match self
+                            .widgets
+                            .handle_key(event, &mut self.cpu, &mut self.memory)
+                        {
                             KeyAction::Pause => {
                                 self.running = false;
                             }
@@ -149,9 +149,7 @@ impl Debugger {
                             }
                             KeyAction::Step => {
                                 // TODO: handle error
-                                if let Err(e) = self.cpu.step() {
-                                    self.widgets.display_error(format!("{}", e));
-                                }
+                                self.cpu.step(&mut self.memory);
                                 self.refresh();
                             }
                             KeyAction::Quit => {

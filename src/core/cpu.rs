@@ -1,178 +1,17 @@
-use crate::cartridge::Cartridge;
-use crate::memory_map::{Mem, MemoryMap};
-use crate::opcode::{Condition, Decoder, Opcode};
-use crate::register::{Flag, Imm16, Reg16, Reg8, Registers};
-use crate::{BitField, Dst, RWResult, ReadWriteError, Src};
-
-use std::fmt;
-use std::path::Path;
-
-#[derive(Debug)]
-pub struct RuntimeError(pub RuntimeErrorKind);
-
-#[derive(Debug)]
-pub enum RuntimeErrorKind {
-    ReadWriteError(ReadWriteError),
-}
-
-impl fmt::Display for RuntimeError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match &self.0 {
-            RuntimeErrorKind::ReadWriteError(e) => write!(f, "{}", e),
-        }
-    }
-}
-
-#[derive(Clone)]
-pub struct Watcher<S: Src<T> + fmt::Display, T> {
-    src: S,
-    original: T,
-}
-
-impl<S: Src<T> + fmt::Display, T: PartialEq + Copy> Watcher<S, T> {
-    pub fn new(src: S, cpu: &CPU) -> Watcher<S, T> {
-        let original = src.read(cpu);
-        Watcher { src, original }
-    }
-
-    pub fn refresh(&mut self, cpu: &CPU) {
-        self.original = self.src.read(cpu);
-    }
-
-    pub fn check(&self, cpu: &CPU) -> bool {
-        self.src.read(cpu) != self.original
-    }
-}
-
-impl<S: Src<T> + fmt::Display, T: PartialEq> fmt::Display for Watcher<S, T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.src)
-    }
-}
-
-#[derive(Clone)]
-pub enum WatchKind {
-    Reg8(Watcher<Reg8, u8>),
-    Reg16(Watcher<Reg16, u16>),
-    Mem(Watcher<Mem<u16>, u8>),
-    Flag(Watcher<Flag, bool>),
-}
-
-impl WatchKind {
-    pub fn check(&self, cpu: &CPU) -> bool {
-        match self {
-            WatchKind::Reg8(w) => w.check(cpu),
-            WatchKind::Reg16(w) => w.check(cpu),
-            WatchKind::Mem(w) => w.check(cpu),
-            WatchKind::Flag(w) => w.check(cpu),
-        }
-    }
-
-    pub fn refresh(&mut self, cpu: &CPU) {
-        match self {
-            WatchKind::Reg8(w) => w.refresh(cpu),
-            WatchKind::Reg16(w) => w.refresh(cpu),
-            WatchKind::Mem(w) => w.refresh(cpu),
-            WatchKind::Flag(w) => w.refresh(cpu),
-        }
-    }
-}
-
-impl fmt::Display for WatchKind {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            WatchKind::Reg8(w) => write!(f, "Watching register {}", w),
-            WatchKind::Reg16(w) => write!(f, "Watching register {}", w),
-            WatchKind::Mem(w) => write!(f, "Watching address {}", w),
-            WatchKind::Flag(w) => write!(f, "Watching flag {}", w),
-        }
-    }
-}
-
-#[derive(Clone)]
-pub enum InterruptKind {
-    VBlank,
-    LCD,
-    Timer,
-    SerialIO,
-    Joypad,
-}
-
-impl InterruptKind {
-    pub fn mask(&self) -> u8 {
-        match self {
-            InterruptKind::VBlank => 0x1,
-            InterruptKind::LCD => 0x2,
-            InterruptKind::Timer => 0x4,
-            InterruptKind::SerialIO => 0x8,
-            InterruptKind::Joypad => 0x10,
-        }
-    }
-
-    pub fn check(&self, cpu: &CPU) -> bool {
-        let mask = self.mask();
-
-        Mem(0xFF0F).read(cpu) & mask != 0
-    }
-
-    pub fn bit(&self) -> u8 {
-        match self {
-            InterruptKind::VBlank => 0,
-            InterruptKind::LCD => 1,
-            InterruptKind::Timer => 2,
-            InterruptKind::SerialIO => 3,
-            InterruptKind::Joypad => 4,
-        }
-    }
-}
-
-impl fmt::Display for InterruptKind {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            InterruptKind::VBlank => write!(f, "Watching VBlank interrupt"),
-            InterruptKind::LCD => write!(f, "Watching LCD interrupt"),
-            InterruptKind::Timer => write!(f, "Watching Timer interrupt"),
-            InterruptKind::SerialIO => write!(f, "Watching Serial I/O interrupt"),
-            InterruptKind::Joypad => write!(f, "Watching Joypad interrupt"),
-        }
-    }
-}
-
-#[derive(Clone)]
-pub enum Breakpoint {
-    Address(u16),
-    Opcode(u8),
-    Watch(WatchKind),
-    Interrupt(InterruptKind),
-}
-
-impl Breakpoint {
-    pub fn check(&self, cpu: &CPU) -> bool {
-        match self {
-            Breakpoint::Address(addr) => Reg16::PC.read(cpu) == *addr,
-            Breakpoint::Opcode(op) => Mem(Reg16::PC).read(cpu) == *op,
-            Breakpoint::Watch(w) => w.check(cpu),
-            Breakpoint::Interrupt(i) => i.check(cpu),
-        }
-    }
-
-    pub fn to_string(&self, cpu: &CPU) -> String {
-        let reached = if self.check(cpu) { "(Reached)" } else { "" };
-
-        format!("{} {}", self, reached)
-    }
-}
-
-impl fmt::Display for Breakpoint {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Breakpoint::Address(addr) => write!(f, "Break at address 0x{:04x}", addr),
-            Breakpoint::Opcode(op) => write!(f, "Break at opcode 0x{:02x}", op),
-            Breakpoint::Watch(w) => write!(f, "{}", w.to_string()),
-            Breakpoint::Interrupt(i) => write!(f, "{}", i),
-        }
-    }
-}
+use crate::memory_map::Mem16;
+use crate::{
+    breakpoint::Breakpoint,
+    memory_map::{Interconnect, Mem, MemIdx},
+    Either,
+};
+use crate::{
+    memory_map::SignedImm8,
+    register::{Flag, Reg16, Reg8, Registers},
+};
+use crate::{
+    opcode::{Decoder, Opcode},
+    register::Condition,
+};
 
 /// CPU emulator, has access to the memory bus and the registers.
 /// Its primary function is to execute instructions and modify memory
@@ -180,110 +19,71 @@ impl fmt::Display for Breakpoint {
 #[derive(Default)]
 pub struct CPU {
     pub(crate) registers: Registers,
-    pub(crate) memory_map: MemoryMap,
     pub(crate) breakpoints: Vec<Breakpoint>,
     pub(crate) cycles: usize,
     pub(crate) interrupt_enable: bool,
 }
+
+// VBLANK timing: 17555
 
 impl CPU {
     /// Creates a new CPU, initalizing the memory map and the registers.
     pub fn new() -> CPU {
         CPU {
             registers: Registers::new(),
-            memory_map: MemoryMap::new(),
             breakpoints: vec![],
             cycles: 0,
             interrupt_enable: false,
         }
     }
 
-    /// Initializes and "inserts" a game cartridge into the cartridge slot.
-    /// The cartridge is ultimately managed by the `MBC`.
-    pub fn set_cartridge<P: AsRef<Path>>(&mut self, path: P) {
-        self.memory_map
-            .set_cartridge(Cartridge::load(path).unwrap())
-    }
-
-    fn set_interrupt(&mut self, interrupt: InterruptKind) {
-        let current = Mem(0xFF0F).read(self);
-        let mut bf = BitField::from(current);
-        bf.set(interrupt.bit(), true);
-        let new: u8 = bf.into();
-        Mem(0xFF0F).write(self, new);
-    }
-
-    fn is_interrupt_enabled(&self, interrupt: InterruptKind) -> bool {
-        let ie = Mem(0xFFFF).read(self);
-        ie & interrupt.mask() == 0
-    }
-
     /// Executes the current instruction, modifying registers and memory
     /// accordingly, and advances towards the next instruction.
-    pub fn step(&mut self) -> Result<(), RuntimeError> {
-        if self.cycles >= 17555 {
-            // VBlank interrupt time
-            self.cycles = 0;
-            self.set_interrupt(InterruptKind::VBlank);
-
-            if self.interrupt_enable && self.is_interrupt_enabled(InterruptKind::VBlank) {
-                self.interrupt_enable = false;
-
-                self.push(Reg16::PC).unwrap();
-                Reg16::PC.write(self, 0x40);
-            }
-        }
-
-        let instruction = Decoder::decode(self);
+    pub fn step(&mut self, memory: &mut Interconnect) {
+        let instruction = Decoder::decode(&self.registers, memory);
         let size = instruction.size();
 
-        let mut result = Ok(());
-        let new_pc = match self.execute_opcode(instruction) {
-            Ok((option, cycles)) => {
-                self.cycles += cycles;
-                option.unwrap_or_else(|| Reg16::PC.read(self).wrapping_add(size as u16))
-            }
-            Err(e) => {
-                result = Err(e);
-                Reg16::PC.read(self)
-            }
-        };
+        let (maybe_pc, cycles) = self.execute_opcode(instruction, memory);
 
-        Reg16::PC.write(self, new_pc);
+        self.cycles += cycles;
+        let new_pc =
+            maybe_pc.unwrap_or_else(|| Reg16::PC.read(&self.registers).wrapping_add(size as u16));
 
-        result
+        Reg16::PC.write(&mut self.registers, new_pc);
     }
 
     /// Executes one step of instruction, and returns true if a breakpoint is triggered
-    pub fn step_check(&mut self) -> Result<bool, RuntimeError> {
-        self.step()?;
-        let results = self.check_breakpoints();
+    pub fn step_check(&mut self, memory: &mut Interconnect) -> bool {
+        self.step(memory);
+        let results = self.check_breakpoints(memory);
         let mut breakpoints = self.breakpoints.clone();
         breakpoints.iter_mut().for_each(|b| {
             if let Breakpoint::Watch(w) = b {
-                w.refresh(self);
+                w.refresh(memory, &self.registers);
             }
         });
         self.breakpoints = breakpoints;
-        Ok(results)
+        results
     }
 
     /// Runs until an error occurs.
-    pub fn run(&mut self) -> Result<(), RuntimeError> {
+    pub fn run(&mut self, memory: &mut Interconnect) {
         loop {
-            self.step()?;
+            self.step(memory);
         }
     }
 
-    pub fn check_breakpoints(&self) -> bool {
-        self.breakpoints.iter().map(|b| b.check(self)).any(|b| b)
+    pub fn check_breakpoints(&self, memory: &Interconnect) -> bool {
+        self.breakpoints
+            .iter()
+            .map(|b| b.check(memory, &self.registers))
+            .any(|b| b)
     }
 
-    pub fn run_breakpoints(&mut self) -> Result<(), RuntimeError> {
-        while !self.check_breakpoints() {
-            self.step()?
+    pub fn run_breakpoints(&mut self, memory: &mut Interconnect) {
+        while !self.check_breakpoints(memory) {
+            self.step(memory);
         }
-        Ok(())
     }
 
     pub fn add_breakpoint(&mut self, breakpoint: Breakpoint) {
@@ -292,12 +92,12 @@ impl CPU {
 
     // Special operations
 
-    fn daa<D: Dst<u8> + Src<u8>>(&mut self, dst: D) -> RWResult<()> {
-        let mut a = (dst.try_read(self)?) as u16;
+    fn daa(&mut self) {
+        let mut a = (Reg8::A.read(&self.registers)) as u16;
 
-        let n = Flag::N.try_read(self)?;
-        let c = Flag::C.try_read(self)?;
-        let h = Flag::H.try_read(self)?;
+        let n = Flag::N.read(&self.registers);
+        let c = Flag::C.read(&self.registers);
+        let h = Flag::H.read(&self.registers);
 
         if n {
             if c {
@@ -309,50 +109,44 @@ impl CPU {
         } else {
             if c || ((a & 0xFF) > 0x99) {
                 a += 0x60;
-                Flag::C.write(self, true);
+                Flag::C.write(&mut self.registers, true);
             }
             if h || ((a & 0x0F) > 0x09) {
                 a += 0x06;
             }
         }
 
-        Flag::Z.try_write(self, (a as u8) == 0)?;
-        Flag::H.try_write(self, false)?;
-        dst.try_write(self, a as u8)?;
-
-        Ok(())
+        Flag::Z.write(&mut self.registers, (a as u8) == 0);
+        Flag::H.write(&mut self.registers, false);
+        Reg8::A.write(&mut self.registers, a as u8);
     }
 
     // Jumps, calls, returns
 
     // Returns the offset added to the next PC
-    fn jump_relative<S: Src<i8>>(
-        &mut self,
-        condition: Option<Condition>,
-        offset: S,
-    ) -> RWResult<Option<i8>> {
-        let offset = offset.read(self);
+    fn jump_relative(&self, condition: Option<Condition>, memory: &Interconnect) -> Option<i8> {
+        let offset = SignedImm8.read(memory, &self.registers);
 
-        Ok(match condition {
+        match condition {
             Some(c) => {
-                if c.try_read(self)? {
+                if c.read(&self.registers) {
                     Some(offset)
                 } else {
                     None
                 }
             }
             None => Some(offset),
-        })
+        }
     }
 
-    fn ret(&mut self, condition: Option<Condition>) -> RWResult<Option<u16>> {
-        Ok(match condition {
+    fn ret(&mut self, condition: Option<Condition>, memory: &Interconnect) -> Option<u16> {
+        match condition {
             Some(c) => {
-                if c.try_read(self)? {
-                    let low = Mem(Reg16::SP).try_read(self)? as u16;
-                    Reg16::SP.add(self, 1);
-                    let high = Mem(Reg16::SP).try_read(self)? as u16;
-                    Reg16::SP.add(self, 1);
+                if c.read(&self.registers) {
+                    let low = Mem(MemIdx::Reg16(Reg16::SP)).read(memory, &self.registers) as u16;
+                    Reg16::SP.add(&mut self.registers, 1);
+                    let high = Mem(MemIdx::Reg16(Reg16::SP)).read(memory, &self.registers) as u16;
+                    Reg16::SP.add(&mut self.registers, 1);
 
                     Some((high << 8) | low)
                 } else {
@@ -360,459 +154,536 @@ impl CPU {
                 }
             }
             None => {
-                let low = Mem(Reg16::SP).try_read(self)? as u16;
-                Reg16::SP.add(self, 1);
-                let high = Mem(Reg16::SP).try_read(self)? as u16;
-                Reg16::SP.add(self, 1);
+                let low = Mem(MemIdx::Reg16(Reg16::SP)).read(memory, &self.registers) as u16;
+                Reg16::SP.add(&mut self.registers, 1);
+                let high = Mem(MemIdx::Reg16(Reg16::SP)).read(memory, &self.registers) as u16;
+                Reg16::SP.add(&mut self.registers, 1);
 
                 Some((high << 8) | low)
             }
-        })
+        }
     }
 
-    fn jump<S: Src<u16>>(
-        &mut self,
-        condition: Option<Condition>,
-        addr: S,
-    ) -> RWResult<Option<u16>> {
-        Ok(match condition {
+    fn jump(&mut self, condition: Option<Condition>, addr: u16) -> Option<u16> {
+        match condition {
             Some(c) => {
-                if c.read(self) {
-                    Some(addr.try_read(self)?)
+                if c.read(&self.registers) {
+                    Some(addr)
                 } else {
                     None
                 }
             }
-            None => Some(addr.try_read(self)?),
-        })
+            None => Some(addr),
+        }
     }
 
-    fn call<S: Src<u16>>(
+    fn call(
         &mut self,
         condition: Option<Condition>,
-        addr: S,
-    ) -> RWResult<Option<u16>> {
-        Ok(match condition {
+        memory: &mut Interconnect,
+        addr: u16,
+    ) -> Option<u16> {
+        match condition {
             Some(c) => {
-                if c.read(self) {
-                    self.push(Reg16::PC.read(self) + 3)?;
-                    Some(addr.try_read(self)?)
+                if c.read(&self.registers) {
+                    self.push_direct(Reg16::PC.read(&self.registers) + 3, memory);
+                    Some(addr)
                 } else {
                     None
                 }
             }
             None => {
-                self.push(Reg16::PC.read(self) + 3)?;
-                Some(addr.try_read(self)?)
+                self.push_direct(Reg16::PC.read(&self.registers) + 3, memory);
+                Some(addr)
             }
-        })
+        }
     }
 
     // 16-bit operations
 
-    fn increment_16<D: Src<u16> + Dst<u16>>(&mut self, dst: D) -> RWResult<()> {
-        dst.try_add(self, 1)
+    fn increment_16(&mut self, reg: Reg16) {
+        reg.add(&mut self.registers, 1)
     }
 
-    fn decrement_16<D: Src<u16> + Dst<u16>>(&mut self, dst: D) -> RWResult<()> {
-        dst.try_sub(self, 1)
+    fn decrement_16(&mut self, reg: Reg16) {
+        reg.sub(&mut self.registers, 1)
     }
 
-    fn add_16<D: Dst<u16> + Src<u16>, S: Src<u16>>(&mut self, dst: D, src: S) -> RWResult<()> {
-        let a = dst.try_read(self)? as u32;
-        let b = src.try_read(self)? as u32;
+    fn add_16(&mut self, dst: Reg16, src: Reg16) {
+        let a = dst.read(&self.registers) as u32;
+        let b = src.read(&self.registers) as u32;
 
         let r = a + b;
 
-        dst.try_write(self, r as u16)?;
+        dst.write(&mut self.registers, r as u16);
 
-        Flag::N.write(self, false);
-        Flag::H.write(self, ((a ^ b ^ (r & 0xffff)) & 0x1000) != 0);
-        Flag::C.write(self, (r & 0x10000) != 0);
-
-        Ok(())
+        Flag::N.write(&mut self.registers, false);
+        Flag::H.write(&mut self.registers, ((a ^ b ^ (r & 0xffff)) & 0x1000) != 0);
+        Flag::C.write(&mut self.registers, (r & 0x10000) != 0);
     }
 
-    fn add_16_sp<D: Dst<u16> + Src<u16>, S: Src<i8>>(&mut self, dst: D, src: S) -> RWResult<()> {
-        let a = dst.try_read(self)? as i32;
-        let b = src.try_read(self)? as i32;
+    fn add_16_sp(&mut self, dst: Reg16, src: SignedImm8, memory: &Interconnect) {
+        let a = dst.read(&self.registers) as i32;
+        let b = src.read(memory, &self.registers) as i32;
 
         let r = a + b;
 
-        dst.try_write(self, r as u16)?;
-        Flag::Z.write(self, false);
-        Flag::N.write(self, false);
-        Flag::H.write(self, ((a ^ b ^ (r & 0xffff)) & 0x1000) != 0);
-        Flag::C.write(self, (r & 0x10000) != 0);
-
-        Ok(())
+        dst.write(&mut self.registers, r as u16);
+        Flag::Z.write(&mut self.registers, false);
+        Flag::N.write(&mut self.registers, false);
+        Flag::H.write(&mut self.registers, ((a ^ b ^ (r & 0xffff)) & 0x1000) != 0);
+        Flag::C.write(&mut self.registers, (r & 0x10000) != 0);
     }
 
     // 16-bit loads & stack operations
 
-    fn load_16<D: Dst<u16> + Src<u16>, S: Src<u16>>(&mut self, dst: D, src: S) -> RWResult<()> {
-        dst.try_write(self, src.read(self))
+    fn load_16(&mut self, dst: Reg16, src: u16) {
+        dst.write(&mut self.registers, src)
     }
 
-    fn load_16_sp<S: Src<u16>>(&mut self, dst: Mem<Imm16>, src: S) -> RWResult<()> {
-        let value = src.try_read(self)?;
+    fn load_16_sp(&mut self, dst: Mem16, src: Reg16, memory: &mut Interconnect) {
+        let value = src.read(&self.registers);
+
+        dst.write(memory, &self.registers, value);
+    }
+
+    fn pop(&mut self, dst: Reg16, memory: &Interconnect) {
+        let sp = Reg16::SP.read(&self.registers);
+        let low = memory.read(sp) as u16;
+        Reg16::SP.add(&mut self.registers, 1);
+
+        let sp = Reg16::SP.read(&self.registers);
+        let high = memory.read(sp) as u16;
+        Reg16::SP.add(&mut self.registers, 1);
+
+        dst.write(&mut self.registers, (high << 8) | low)
+    }
+
+    fn push(&mut self, src: Reg16, memory: &mut Interconnect) {
+        let value = src.read(&self.registers);
         let high = (value >> 8) as u8;
         let low = (value & 0xFF) as u8;
 
-        dst.try_write(self, low)?;
-        Mem(dst.0.try_read(self)? + 1).try_write(self, high)
+        Reg16::SP.sub(&mut self.registers, 1);
+        memory.write(Reg16::SP.read(&self.registers), high);
+
+        Reg16::SP.sub(&mut self.registers, 1);
+        memory.write(Reg16::SP.read(&self.registers), low);
     }
 
-    fn pop<D: Dst<u16>>(&mut self, dst: D) -> RWResult<()> {
-        let low = Mem(Reg16::SP).try_read(self)? as u16;
-        Reg16::SP.add(self, 1);
-        let high = Mem(Reg16::SP).try_read(self)? as u16;
-        Reg16::SP.add(self, 1);
-
-        dst.try_write(self, (high << 8) | low)
-    }
-
-    fn push<S: Src<u16>>(&mut self, src: S) -> RWResult<()> {
-        let value = src.read(self);
+    fn push_direct(&mut self, src: u16, memory: &mut Interconnect) {
+        let value = src;
         let high = (value >> 8) as u8;
         let low = (value & 0xFF) as u8;
 
-        Reg16::SP.sub(self, 1);
-        self.load(Mem(Reg16::SP), high)?;
-        Reg16::SP.sub(self, 1);
-        self.load(Mem(Reg16::SP), low)?;
+        Reg16::SP.sub(&mut self.registers, 1);
+        memory.write(Reg16::SP.read(&self.registers), high);
 
-        Ok(())
+        Reg16::SP.sub(&mut self.registers, 1);
+        memory.write(Reg16::SP.read(&self.registers), low);
     }
 
-    fn load_hl_sp_offset<S: Src<i8>>(&mut self, src: S) -> RWResult<()> {
-        let base = Reg16::SP.try_read(self)? as i32;
-        let offset = src.try_read(self)? as i32;
+    fn load_hl_sp_offset(&mut self, memory: &Interconnect) {
+        let base = Reg16::SP.read(&self.registers) as i32;
+        let offset = SignedImm8.read(memory, &self.registers) as i32;
 
         let addr = base + offset;
 
-        Reg16::HL.try_write(self, addr as u16)?;
+        Reg16::HL.write(&mut self.registers, addr as u16);
 
-        Flag::Z.write(self, false);
-        Flag::N.write(self, false);
-        Flag::H.write(self, ((base ^ offset ^ (addr & 0xFFFF)) & 0x10) == 0x10);
-        Flag::C.write(self, ((base ^ offset ^ (addr & 0xFFFF)) & 0x100) == 0x100);
-
-        Ok(())
+        Flag::Z.write(&mut self.registers, false);
+        Flag::N.write(&mut self.registers, false);
+        Flag::H.write(
+            &mut self.registers,
+            ((base ^ offset ^ (addr & 0xFFFF)) & 0x10) == 0x10,
+        );
+        Flag::C.write(
+            &mut self.registers,
+            ((base ^ offset ^ (addr & 0xFFFF)) & 0x100) == 0x100,
+        );
     }
 
     // Load
 
-    fn load<S: Src<u8>, D: Dst<u8>>(&mut self, dst: D, src: S) -> RWResult<()> {
-        dst.try_write(self, src.try_read(self)?)?;
-        Ok(())
+    fn load_mem(&mut self, dst: Mem, value: u8, memory: &mut Interconnect) {
+        dst.write(memory, &self.registers, value);
+    }
+
+    fn load_reg(&mut self, dst: Reg8, value: u8) {
+        dst.write(&mut self.registers, value);
     }
 
     // Arithmetic operations
 
-    fn increment<D: Dst<u8> + Src<u8>>(&mut self, dst: D) -> RWResult<()> {
-        let current = dst.try_read(self)?;
+    fn increment_reg8(&mut self, dst: Reg8) {
+        let current = dst.read(&self.registers);
         let result = current.wrapping_add(1);
 
-        dst.try_write(self, result)?;
-        Flag::Z.write(self, result == 0);
-        Flag::N.write(self, false);
-        Flag::H.write(self, result.trailing_zeros() >= 4);
-
-        Ok(())
+        dst.write(&mut self.registers, result);
+        Flag::Z.write(&mut self.registers, result == 0);
+        Flag::N.write(&mut self.registers, false);
+        Flag::H.write(&mut self.registers, result.trailing_zeros() >= 4);
     }
 
-    fn decrement<D: Dst<u8> + Src<u8>>(&mut self, dst: D) -> RWResult<()> {
-        let current = dst.try_read(self)?;
+    fn increment_mem(&mut self, dst: Mem, memory: &mut Interconnect) {
+        let current = dst.read(memory, &self.registers);
+        let result = current.wrapping_add(1);
+
+        dst.write(memory, &mut self.registers, result);
+        Flag::Z.write(&mut self.registers, result == 0);
+        Flag::N.write(&mut self.registers, false);
+        Flag::H.write(&mut self.registers, result.trailing_zeros() >= 4);
+    }
+
+    fn decrement_reg8(&mut self, dst: Reg8) {
+        let current = dst.read(&self.registers);
         let result = current.wrapping_sub(1);
 
-        dst.try_write(self, result)?;
-        Flag::Z.write(self, result == 0);
-        Flag::N.write(self, true);
-        Flag::H.write(self, result.trailing_zeros() >= 4);
-
-        Ok(())
+        dst.write(&mut self.registers, result);
+        Flag::Z.write(&mut self.registers, result == 0);
+        Flag::N.write(&mut self.registers, false);
+        Flag::H.write(&mut self.registers, result.trailing_zeros() >= 4);
     }
 
-    fn add<D: Dst<u8> + Src<u8>, S: Src<u8>>(&mut self, dst: D, src: S) -> RWResult<()> {
-        let a = dst.try_read(self)?;
-        let b = src.try_read(self)?;
+    fn decrement_mem(&mut self, dst: Mem, memory: &mut Interconnect) {
+        let current = dst.read(memory, &self.registers);
+        let result = current.wrapping_sub(1);
+
+        dst.write(memory, &mut self.registers, result);
+        Flag::Z.write(&mut self.registers, result == 0);
+        Flag::N.write(&mut self.registers, false);
+        Flag::H.write(&mut self.registers, result.trailing_zeros() >= 4);
+    }
+
+    fn add(&mut self, dst: Reg8, src: u8) {
+        let a = dst.read(&self.registers);
+        let b = src;
 
         let (result, overflow) = a.overflowing_add(b);
         let c = a ^ b ^ result;
 
-        dst.try_write(self, result)?;
+        dst.write(&mut self.registers, result);
 
-        Flag::Z.write(self, result == 0);
-        Flag::N.write(self, false);
-        Flag::H.write(self, c.trailing_zeros() >= 4);
-        Flag::C.write(self, overflow);
-
-        Ok(())
+        Flag::Z.write(&mut self.registers, result == 0);
+        Flag::N.write(&mut self.registers, false);
+        Flag::H.write(&mut self.registers, c.trailing_zeros() >= 4);
+        Flag::C.write(&mut self.registers, overflow);
     }
 
-    fn add_carry<D: Dst<u8> + Src<u8>, S: Src<u8>>(&mut self, dst: D, src: S) -> RWResult<()> {
-        let a = dst.try_read(self)? as u16;
-        let b = src.try_read(self)? as u16;
-        let c = Flag::C.read(self) as u16;
+    fn add_carry(&mut self, dst: Reg8, src: u8) {
+        let a = dst.read(&self.registers) as u16;
+        let b = src as u16;
+        let c = Flag::C.read(&self.registers) as u16;
 
         let result = a + b + c;
 
-        dst.try_write(self, result as u8)?;
+        dst.write(&mut self.registers, result as u8);
 
-        Flag::Z.write(self, (result as u8) == 0);
-        Flag::N.write(self, false);
-        Flag::H.write(self, ((a & 0xF) + (b & 0xF) + c) > 0xF);
-        Flag::C.write(self, result > 0xFF);
-
-        Ok(())
+        Flag::Z.write(&mut self.registers, (result as u8) == 0);
+        Flag::N.write(&mut self.registers, false);
+        Flag::H.write(&mut self.registers, ((a & 0xF) + (b & 0xF) + c) > 0xF);
+        Flag::C.write(&mut self.registers, result > 0xFF);
     }
 
-    fn sub<D: Dst<u8> + Src<u8>, S: Src<u8>>(&mut self, dst: D, src: S) -> RWResult<()> {
-        let a = dst.try_read(self)?;
-        let b = src.try_read(self)?;
+    fn sub(&mut self, dst: Reg8, src: u8) {
+        let a = dst.read(&self.registers);
+        let b = src;
 
         let result = a.wrapping_sub(b);
         let c = a ^ b ^ result;
 
-        dst.try_write(self, result)?;
+        dst.write(&mut self.registers, result);
 
-        Flag::Z.write(self, result == 0);
-        Flag::N.write(self, true);
-        Flag::H.write(self, c.trailing_zeros() >= 4);
-        Flag::C.write(self, c.trailing_zeros() >= 8);
-
-        Ok(())
+        Flag::Z.write(&mut self.registers, result == 0);
+        Flag::N.write(&mut self.registers, true);
+        Flag::H.write(&mut self.registers, c.trailing_zeros() >= 4);
+        Flag::C.write(&mut self.registers, c.trailing_zeros() >= 8);
     }
 
-    fn sub_carry<D: Dst<u8> + Src<u8>, S: Src<u8>>(&mut self, dst: D, src: S) -> RWResult<()> {
-        let a = dst.try_read(self)? as i16;
-        let b = src.try_read(self)? as i16;
-        let c = Flag::C.read(self) as i16;
+    fn sub_carry(&mut self, dst: Reg8, src: u8) {
+        let a = dst.read(&self.registers) as i16;
+        let b = src as i16;
+        let c = Flag::C.read(&self.registers) as i16;
 
         let result = a.wrapping_sub(b).wrapping_sub(c);
 
-        dst.try_write(self, result as u8)?;
+        dst.write(&mut self.registers, result as u8);
 
-        Flag::Z.write(self, result == 0);
-        Flag::N.write(self, true);
-        Flag::H.write(self, ((a & 0x0f) - (b & 0x0f) - c) < 0);
-        Flag::C.write(self, result < 0);
-
-        Ok(())
+        Flag::Z.write(&mut self.registers, result == 0);
+        Flag::N.write(&mut self.registers, true);
+        Flag::H.write(&mut self.registers, ((a & 0x0f) - (b & 0x0f) - c) < 0);
+        Flag::C.write(&mut self.registers, result < 0);
     }
 
-    fn and<D: Dst<u8> + Src<u8>, S: Src<u8>>(&mut self, dst: D, src: S) -> RWResult<()> {
-        let a = dst.try_read(self)?;
-        let b = src.try_read(self)?;
+    fn and(&mut self, dst: Reg8, src: u8) {
+        let a = dst.read(&self.registers);
+        let b = src;
 
         let result = a & b;
 
-        dst.try_write(self, result)?;
+        dst.write(&mut self.registers, result);
 
-        Flag::Z.write(self, result == 0);
-        Flag::N.write(self, false);
-        Flag::H.write(self, true);
-        Flag::C.write(self, false);
-
-        Ok(())
+        Flag::Z.write(&mut self.registers, result == 0);
+        Flag::N.write(&mut self.registers, false);
+        Flag::H.write(&mut self.registers, true);
+        Flag::C.write(&mut self.registers, false);
     }
 
-    fn xor<D: Dst<u8> + Src<u8>, S: Src<u8>>(&mut self, dst: D, src: S) -> RWResult<()> {
-        let a = dst.try_read(self)?;
-        let b = src.try_read(self)?;
+    fn xor(&mut self, dst: Reg8, src: u8) {
+        let a = dst.read(&self.registers);
+        let b = src;
 
         let result = a ^ b;
 
-        dst.try_write(self, result)?;
+        dst.write(&mut self.registers, result);
 
-        Flag::Z.write(self, result == 0);
-        Flag::N.write(self, false);
-        Flag::H.write(self, false);
-        Flag::C.write(self, false);
-
-        Ok(())
+        Flag::Z.write(&mut self.registers, result == 0);
+        Flag::N.write(&mut self.registers, false);
+        Flag::H.write(&mut self.registers, false);
+        Flag::C.write(&mut self.registers, false);
     }
 
-    fn or<D: Dst<u8> + Src<u8>, S: Src<u8>>(&mut self, dst: D, src: S) -> RWResult<()> {
-        let a = dst.try_read(self)?;
-        let b = src.try_read(self)?;
+    fn or(&mut self, dst: Reg8, src: u8) {
+        let a = dst.read(&self.registers);
+        let b = src;
 
         let result = a & b;
 
-        dst.try_write(self, result)?;
+        dst.write(&mut self.registers, result);
 
-        Flag::Z.write(self, result == 0);
-        Flag::N.write(self, false);
-        Flag::H.write(self, false);
-        Flag::C.write(self, false);
-
-        Ok(())
+        Flag::Z.write(&mut self.registers, result == 0);
+        Flag::N.write(&mut self.registers, false);
+        Flag::H.write(&mut self.registers, false);
+        Flag::C.write(&mut self.registers, false);
     }
 
-    fn compare<D: Dst<u8> + Src<u8>, S: Src<u8>>(&mut self, dst: D, src: S) -> RWResult<()> {
-        let a = dst.try_read(self)?;
-        let b = src.try_read(self)?;
+    fn compare(&mut self, dst: Reg8, src: u8) {
+        let a = dst.read(&self.registers);
+        let b = src;
 
-        Flag::Z.write(self, a == b);
-        Flag::N.write(self, true);
-        Flag::H.write(self, (a.wrapping_sub(b) & 0xF) > (a & 0xF));
-        Flag::C.write(self, a < b);
-
-        Ok(())
+        Flag::Z.write(&mut self.registers, a == b);
+        Flag::N.write(&mut self.registers, true);
+        Flag::H.write(&mut self.registers, (a.wrapping_sub(b) & 0xF) > (a & 0xF));
+        Flag::C.write(&mut self.registers, a < b);
     }
 
     // Bit operations
 
-    fn rlca(&mut self) -> RWResult<()> {
-        self.rlc(Reg8::A)?;
-        Flag::Z.write(self, false);
-        Ok(())
+    fn rlca(&mut self, memory: &mut Interconnect) {
+        self.rlc(Either::Left(Reg8::A), memory);
+        Flag::Z.write(&mut self.registers, false);
     }
 
-    fn rrca(&mut self) -> RWResult<()> {
-        self.rrc(Reg8::A)?;
-        Flag::Z.write(self, false);
-        Ok(())
+    fn rrca(&mut self, memory: &mut Interconnect) {
+        self.rrc(Either::Left(Reg8::A), memory);
+        Flag::Z.write(&mut self.registers, false);
     }
 
-    fn rla(&mut self) -> RWResult<()> {
-        self.rl(Reg8::A)?;
-        Flag::Z.write(self, false);
-        Ok(())
+    fn rla(&mut self, memory: &mut Interconnect) {
+        self.rl(Either::Left(Reg8::A), memory);
+        Flag::Z.write(&mut self.registers, false);
     }
 
-    fn rra(&mut self) -> RWResult<()> {
-        self.rr(Reg8::A)?;
-        Flag::Z.write(self, false);
-        Ok(())
+    fn rra(&mut self, memory: &mut Interconnect) {
+        self.rr(Either::Left(Reg8::A), memory);
+        Flag::Z.write(&mut self.registers, false);
     }
 
-    fn rlc<D: Src<u8> + Dst<u8>>(&mut self, dst: D) -> RWResult<()> {
-        let value = dst.try_read(self)?;
+    fn rlc(&mut self, dst: Either<Reg8, Mem>, memory: &mut Interconnect) {
+        let value = match dst {
+            Either::Left(r) => r.read(&self.registers),
+            Either::Right(m) => m.read(memory, &self.registers),
+        };
         let result = value.rotate_left(1);
 
-        Flag::Z.write(self, result == 0);
-        Flag::N.write(self, false);
-        Flag::H.write(self, false);
-        Flag::C.write(self, (value & 0x80) == 0x80);
-        dst.try_write(self, result)
+        Flag::Z.write(&mut self.registers, result == 0);
+        Flag::N.write(&mut self.registers, false);
+        Flag::H.write(&mut self.registers, false);
+        Flag::C.write(&mut self.registers, (value & 0x80) == 0x80);
+
+        match dst {
+            Either::Left(r) => r.write(&mut self.registers, result),
+            Either::Right(m) => m.write(memory, &self.registers, result),
+        };
     }
 
-    fn rrc<D: Src<u8> + Dst<u8>>(&mut self, dst: D) -> RWResult<()> {
-        let value = dst.try_read(self)?;
+    fn rrc(&mut self, dst: Either<Reg8, Mem>, memory: &mut Interconnect) {
+        let value = match dst {
+            Either::Left(r) => r.read(&self.registers),
+            Either::Right(m) => m.read(memory, &self.registers),
+        };
         let result = value >> 1;
 
-        Flag::Z.write(self, result == 0);
-        Flag::N.write(self, false);
-        Flag::H.write(self, false);
-        Flag::C.write(self, (value & 1) == 1);
-        dst.try_write(self, result)
+        Flag::Z.write(&mut self.registers, result == 0);
+        Flag::N.write(&mut self.registers, false);
+        Flag::H.write(&mut self.registers, false);
+        Flag::C.write(&mut self.registers, (value & 1) == 1);
+        match dst {
+            Either::Left(r) => r.write(&mut self.registers, result),
+            Either::Right(m) => m.write(memory, &self.registers, result),
+        };
     }
 
-    fn rl<D: Src<u8> + Dst<u8>>(&mut self, dst: D) -> RWResult<()> {
-        let value = dst.try_read(self)?;
-        let old_c = Flag::C.read(self);
+    fn rl(&mut self, dst: Either<Reg8, Mem>, memory: &mut Interconnect) {
+        let value = match dst {
+            Either::Left(r) => r.read(&self.registers),
+            Either::Right(m) => m.read(memory, &self.registers),
+        };
+        let old_c = Flag::C.read(&self.registers);
 
         let result = value.rotate_left(1);
         let result = if old_c { result | 1 } else { result & !(1) };
 
-        Flag::Z.write(self, result == 0);
-        Flag::N.write(self, false);
-        Flag::H.write(self, false);
-        Flag::C.write(self, (value & 0x80) == 0x80);
+        Flag::Z.write(&mut self.registers, result == 0);
+        Flag::N.write(&mut self.registers, false);
+        Flag::H.write(&mut self.registers, false);
+        Flag::C.write(&mut self.registers, (value & 0x80) == 0x80);
 
-        dst.try_write(self, value)
+        match dst {
+            Either::Left(r) => r.write(&mut self.registers, result),
+            Either::Right(m) => m.write(memory, &self.registers, result),
+        };
     }
 
-    fn rr<D: Src<u8> + Dst<u8>>(&mut self, dst: D) -> RWResult<()> {
-        let value = dst.try_read(self)?;
-        let old_c = (Flag::C.read(self) as u8) << 7;
+    fn rr(&mut self, dst: Either<Reg8, Mem>, memory: &mut Interconnect) {
+        let value = match dst {
+            Either::Left(r) => r.read(&self.registers),
+            Either::Right(m) => m.read(memory, &self.registers),
+        };
+
+        let old_c = (Flag::C.read(&self.registers) as u8) << 7;
         let result = (value >> 1) | old_c;
 
-        Flag::Z.write(self, result == 0);
-        Flag::N.write(self, false);
-        Flag::H.write(self, false);
-        Flag::C.write(self, (value & 1) == 1);
-        dst.try_write(self, result)
+        Flag::Z.write(&mut self.registers, result == 0);
+        Flag::N.write(&mut self.registers, false);
+        Flag::H.write(&mut self.registers, false);
+        Flag::C.write(&mut self.registers, (value & 1) == 1);
+
+        match dst {
+            Either::Left(r) => r.write(&mut self.registers, result),
+            Either::Right(m) => m.write(memory, &self.registers, result),
+        };
     }
 
-    fn sla<D: Src<u8> + Dst<u8>>(&mut self, dst: D) -> RWResult<()> {
-        let value = dst.try_read(self)?;
+    fn sla(&mut self, dst: Either<Reg8, Mem>, memory: &mut Interconnect) {
+        let value = match dst {
+            Either::Left(r) => r.read(&self.registers),
+            Either::Right(m) => m.read(memory, &self.registers),
+        };
+
         let result = value << 1;
 
-        Flag::Z.write(self, result == 0);
-        Flag::N.write(self, false);
-        Flag::H.write(self, false);
-        Flag::C.write(self, (value & 0x80) == 0x80);
+        Flag::Z.write(&mut self.registers, result == 0);
+        Flag::N.write(&mut self.registers, false);
+        Flag::H.write(&mut self.registers, false);
+        Flag::C.write(&mut self.registers, (value & 0x80) == 0x80);
 
-        dst.try_write(self, result)
+        match dst {
+            Either::Left(r) => r.write(&mut self.registers, result),
+            Either::Right(m) => m.write(memory, &self.registers, result),
+        };
     }
 
-    fn sra<D: Src<u8> + Dst<u8>>(&mut self, dst: D) -> RWResult<()> {
-        let value = dst.try_read(self)?;
+    fn sra(&mut self, dst: Either<Reg8, Mem>, memory: &mut Interconnect) {
+        let value = match dst {
+            Either::Left(r) => r.read(&self.registers),
+            Either::Right(m) => m.read(memory, &self.registers),
+        };
+
         let msb = value & 0x80;
         let result = (value >> 1) | msb;
 
-        Flag::Z.write(self, result == 0);
-        Flag::N.write(self, false);
-        Flag::H.write(self, false);
-        Flag::C.write(self, (value & 1) == 1);
+        Flag::Z.write(&mut self.registers, result == 0);
+        Flag::N.write(&mut self.registers, false);
+        Flag::H.write(&mut self.registers, false);
+        Flag::C.write(&mut self.registers, (value & 1) == 1);
 
-        dst.try_write(self, result)
+        match dst {
+            Either::Left(r) => r.write(&mut self.registers, result),
+            Either::Right(m) => m.write(memory, &self.registers, result),
+        };
     }
 
-    fn srl<D: Src<u8> + Dst<u8>>(&mut self, dst: D) -> RWResult<()> {
-        let value = dst.try_read(self)?;
+    fn srl(&mut self, dst: Either<Reg8, Mem>, memory: &mut Interconnect) {
+        let value = match dst {
+            Either::Left(r) => r.read(&self.registers),
+            Either::Right(m) => m.read(memory, &self.registers),
+        };
+
         let result = value >> 1;
 
-        Flag::Z.write(self, result == 0);
-        Flag::N.write(self, false);
-        Flag::H.write(self, false);
-        Flag::C.write(self, (value & 1) == 1);
+        Flag::Z.write(&mut self.registers, result == 0);
+        Flag::N.write(&mut self.registers, false);
+        Flag::H.write(&mut self.registers, false);
+        Flag::C.write(&mut self.registers, (value & 1) == 1);
 
-        dst.try_write(self, result)
+        match dst {
+            Either::Left(r) => r.write(&mut self.registers, result),
+            Either::Right(m) => m.write(memory, &self.registers, result),
+        };
     }
 
-    fn swap<D: Src<u8> + Dst<u8>>(&mut self, dst: D) -> RWResult<()> {
-        let value = dst.try_read(self)?;
+    fn swap(&mut self, dst: Either<Reg8, Mem>, memory: &mut Interconnect) {
+        let value = match dst {
+            Either::Left(r) => r.read(&self.registers),
+            Either::Right(m) => m.read(memory, &self.registers),
+        };
+
         let high = value >> 4;
         let low = value & 0xF;
 
         let result = (low << 4) | high;
 
-        Flag::Z.write(self, result == 0);
-        Flag::N.write(self, false);
-        Flag::H.write(self, false);
-        Flag::C.write(self, false);
+        Flag::Z.write(&mut self.registers, result == 0);
+        Flag::N.write(&mut self.registers, false);
+        Flag::H.write(&mut self.registers, false);
+        Flag::C.write(&mut self.registers, false);
 
-        dst.try_write(self, result)
+        match dst {
+            Either::Left(r) => r.write(&mut self.registers, result),
+            Either::Right(m) => m.write(memory, &self.registers, result),
+        };
     }
 
-    fn bit<D: Src<u8> + Dst<u8>>(&mut self, bit: u8, dst: D) -> RWResult<()> {
-        let value = dst.try_read(self)?;
+    fn bit(&mut self, bit: u8, dst: Either<Reg8, Mem>, memory: &Interconnect) {
+        let value = match dst {
+            Either::Left(r) => r.read(&self.registers),
+            Either::Right(m) => m.read(memory, &self.registers),
+        };
 
         let result = (value >> bit) & 1 == 0;
 
-        Flag::Z.write(self, result);
-        Flag::N.write(self, false);
-        Flag::H.write(self, true);
-
-        Ok(())
+        Flag::Z.write(&mut self.registers, result);
+        Flag::N.write(&mut self.registers, false);
+        Flag::H.write(&mut self.registers, true);
     }
 
-    fn set<D: Src<u8> + Dst<u8>>(&mut self, bit: u8, dst: D) -> RWResult<()> {
-        let value = dst.try_read(self)?;
+    fn set(&mut self, bit: u8, dst: Either<Reg8, Mem>, memory: &mut Interconnect) {
+        let value = match dst {
+            Either::Left(r) => r.read(&self.registers),
+            Either::Right(m) => m.read(memory, &self.registers),
+        };
+
         let mask = 1 << bit;
 
-        dst.try_write(self, value | mask)
+        match dst {
+            Either::Left(r) => r.write(&mut self.registers, value | mask),
+            Either::Right(m) => m.write(memory, &self.registers, value | mask),
+        };
     }
 
-    fn res<D: Src<u8> + Dst<u8>>(&mut self, bit: u8, dst: D) -> RWResult<()> {
-        let value = dst.try_read(self)?;
+    fn res(&mut self, bit: u8, dst: Either<Reg8, Mem>, memory: &mut Interconnect) {
+        let value = match dst {
+            Either::Left(r) => r.read(&self.registers),
+            Either::Right(m) => m.read(memory, &self.registers),
+        };
+
         let mask = !(1 << bit);
 
-        dst.try_write(self, value & mask)
+        match dst {
+            Either::Left(r) => r.write(&mut self.registers, value & mask),
+            Either::Right(m) => m.write(memory, &self.registers, value & mask),
+        };
     }
 
     pub fn handle_io_read(&self, addr: u16) -> Option<u8> {
@@ -821,10 +692,10 @@ impl CPU {
         }
     }
 
-    pub fn handle_io_write(&mut self, addr: u16, value: u8) {
+    pub fn handle_io_write(&mut self, addr: u16, value: u8, memory: &mut Interconnect) {
         match addr {
             // SVBK: Change WRAM bank
-            0xFF70 => self.memory_map.wram.set_bank((value & 0x3) as usize),
+            0xFF70 => memory.wram.set_bank((value & 0x3) as usize),
             _ => {}
         }
     }
@@ -833,179 +704,202 @@ impl CPU {
     /// address for the PC register. If the return value is `None`,
     /// then the new PC value is set to the next instruction, based
     /// on the instruction size in bytes.
-    fn execute_opcode(&mut self, opcode: Opcode) -> Result<(Option<u16>, usize), RuntimeError> {
+    fn execute_opcode(
+        &mut self,
+        opcode: Opcode,
+        memory: &mut Interconnect,
+    ) -> (Option<u16>, usize) {
         let mut maybe_pc = None;
-        let next_pc = Reg16::PC.read(self) + opcode.size() as u16;
+        let next_pc = Reg16::PC.read(&self.registers) + opcode.size() as u16;
         let (cycles, cycles_failure) = opcode.cycles();
         let mut actual_cycles = cycles;
 
         match opcode {
-            Opcode::NOP => Ok(()),
+            Opcode::NOP => {}
             Opcode::STOP => unimplemented!(),
             Opcode::HALT => unimplemented!(),
             Opcode::DI => {
                 self.interrupt_enable = false;
-                Ok(())
             }
             Opcode::EI => {
                 self.interrupt_enable = true;
-                Ok(())
             }
 
-            Opcode::JR(c, o) => self.jump_relative(c, o).map(|o| {
-                maybe_pc = o.map(|v| ((next_pc as i32) + (v as i32)) as u16);
+            Opcode::JR(c) => {
+                maybe_pc = self
+                    .jump_relative(c, memory)
+                    .map(|o| ((next_pc as i32) + (o as i32)) as u16);
+
                 if let Some(c) = c {
-                    if !c.read(self) {
+                    if !c.read(&self.registers) {
                         actual_cycles = cycles_failure.unwrap();
                     }
                 }
-            }),
-            Opcode::RET(c) => self.ret(c).map(|v| {
-                maybe_pc = v;
+            }
+
+            Opcode::RET(c) => {
+                maybe_pc = self.ret(c, memory);
+
                 if let Some(c) = c {
-                    if !c.read(self) {
+                    if !c.read(&self.registers) {
                         actual_cycles = cycles_failure.unwrap();
                     }
                 }
-            }),
-            Opcode::JP(c, a) => self.jump(c, a).map(|v| {
-                maybe_pc = v;
+            }
+            Opcode::JP(c, a) => {
+                maybe_pc = self.jump(c, a.read(memory, &self.registers));
                 if let Some(c) = c {
-                    if !c.read(self) {
+                    if !c.read(&self.registers) {
                         actual_cycles = cycles_failure.unwrap();
                     }
                 }
-            }),
-            Opcode::CALL(c, a) => self.call(c, a).map(|v| {
-                maybe_pc = v;
+            }
+            Opcode::CALL(c, a) => {
+                maybe_pc = self.call(c, memory, a.read(memory, &self.registers));
                 if let Some(c) = c {
-                    if !c.read(self) {
+                    if !c.read(&self.registers) {
                         actual_cycles = cycles_failure.unwrap();
                     }
                 }
-            }),
+            }
             Opcode::RETI => unimplemented!(),
-            Opcode::JPHL => self.jump(None, Reg16::HL).map(|v| maybe_pc = v),
+            Opcode::JPHL => maybe_pc = self.jump(None, Reg16::HL.read(&self.registers)),
             Opcode::RST(_) => unimplemented!(),
 
             Opcode::INC16(r) => self.increment_16(r),
             Opcode::DEC16(r) => self.decrement_16(r),
             Opcode::ADDHL(dst, src) => self.add_16(dst, src),
-            Opcode::ADDSP(r, o) => self.add_16_sp(r, o),
+            Opcode::ADDSP(r, o) => self.add_16_sp(r, o, memory),
 
-            Opcode::LD16(dst, src) => self.load_16(dst, src),
-            Opcode::LDImmMemSP(dst, src) => self.load_16_sp(dst, src),
-            Opcode::POP(r) => self.pop(r),
-            Opcode::PUSH(r) => self.push(r),
-            Opcode::LDHLSPOffset(src) => self.load_hl_sp_offset(src),
-            Opcode::LDSPHL => self.load_16(Reg16::SP, Reg16::HL),
+            Opcode::LD16(dst, src) => self.load_16(dst, src.read(memory, &self.registers)),
+            Opcode::LDImmMemSP(dst, src) => self.load_16_sp(dst, src, memory),
+            Opcode::POP(r) => self.pop(r, memory),
+            Opcode::PUSH(r) => self.push(r, memory),
+            Opcode::LDHLSPOffset => self.load_hl_sp_offset(memory),
+            Opcode::LDSPHL => self.load_16(Reg16::SP, Reg16::HL.read(&self.registers)),
 
-            Opcode::LDARegMem(dst, src) => self.load(dst, src),
-            Opcode::LDHLMemIncA(dst, src) => self.load(dst, src).and(Reg16::HL.try_add(self, 1)),
-            Opcode::LDHLMemDecA(dst, src) => self.load(dst, src).and(Reg16::HL.try_sub(self, 1)),
-            Opcode::LDRegMemA(dst, src) => self.load(dst, src),
-            Opcode::LDAHLMemInc(dst, src) => self.load(dst, src).and(Reg16::HL.try_add(self, 1)),
-            Opcode::LDAHLMemDec(dst, src) => self.load(dst, src).and(Reg16::HL.try_sub(self, 1)),
-            Opcode::LDRegImm(dst, src) => self.load(dst, src),
-            Opcode::LDHLMemImm(dst, src) => self.load(dst, src),
-            Opcode::LD(dst, src) => self.load(dst, src),
-            Opcode::LDRegHLMem(dst, src) => self.load(dst, src),
-            Opcode::LDHLMemReg(dst, src) => self.load(dst, src),
-            Opcode::LDHImmMemA(dst, src) => self.load(dst, src),
-            Opcode::LDHAImmMem(dst, src) => self.load(dst, src),
-            Opcode::LDHCMemA(dst, src) => self.load(dst, src),
-            Opcode::LDHACMem(dst, src) => self.load(dst, src),
-            Opcode::LDImmMemA(dst, src) => self.load(dst, src),
-            Opcode::LDAImmMem(dst, src) => self.load(dst, src),
+            Opcode::LDARegMem(dst, src) => self.load_reg(dst, src.read(memory, &self.registers)),
+            Opcode::LDHLMemIncA(dst, src) => {
+                self.load_mem(dst, src.read(&self.registers), memory);
+                Reg16::HL.add(&mut self.registers, 1)
+            }
+            Opcode::LDHLMemDecA(dst, src) => {
+                self.load_mem(dst, src.read(&self.registers), memory);
+                Reg16::HL.sub(&mut self.registers, 1)
+            }
+            Opcode::LDRegMemA(dst, src) => self.load_mem(dst, src.read(&self.registers), memory),
+            Opcode::LDAHLMemInc(dst, src) => {
+                self.load_reg(dst, src.read(memory, &self.registers));
+                Reg16::HL.add(&mut self.registers, 1)
+            }
+            Opcode::LDAHLMemDec(dst, src) => {
+                self.load_reg(dst, src.read(memory, &self.registers));
+                Reg16::HL.sub(&mut self.registers, 1)
+            }
+            Opcode::LDRegImm(dst, src) => self.load_reg(dst, src.read(memory, &self.registers)),
+            Opcode::LDHLMemImm(dst, src) => {
+                self.load_mem(dst, src.read(memory, &self.registers), memory)
+            }
+            Opcode::LD(dst, src) => self.load_reg(dst, src.read(&self.registers)),
+            Opcode::LDRegHLMem(dst, src) => self.load_reg(dst, src.read(memory, &self.registers)),
+            Opcode::LDHLMemReg(dst, src) => self.load_mem(dst, src.read(&self.registers), memory),
+            Opcode::LDHImmMemA(dst, src) => self.load_mem(dst, src.read(&self.registers), memory),
+            Opcode::LDHAImmMem(dst, src) => self.load_reg(dst, src.read(memory, &self.registers)),
+            Opcode::LDHCMemA(dst, src) => self.load_mem(dst, src.read(&self.registers), memory),
+            Opcode::LDHACMem(dst, src) => self.load_reg(dst, src.read(memory, &self.registers)),
+            Opcode::LDImmMemA(dst, src) => self.load_mem(dst, src.read(&self.registers), memory),
+            Opcode::LDAImmMem(dst, src) => self.load_reg(dst, src.read(memory, &self.registers)),
 
-            Opcode::INC(dst) => self.increment(dst),
-            Opcode::INCHLMem(dst) => self.increment(dst),
-            Opcode::DEC(dst) => self.decrement(dst),
-            Opcode::DECHLMem(dst) => self.decrement(dst),
-            Opcode::DAA => self.daa(Reg8::A),
+            Opcode::INC(dst) => self.increment_reg8(dst),
+            Opcode::INCHLMem(dst) => self.increment_mem(dst, memory),
+            Opcode::DEC(dst) => self.decrement_reg8(dst),
+            Opcode::DECHLMem(dst) => self.decrement_mem(dst, memory),
+            Opcode::DAA => self.daa(),
             Opcode::SCF => {
-                Flag::N.write(self, false);
-                Flag::H.write(self, false);
-                Flag::C.write(self, true);
-                Ok(())
+                Flag::N.write(&mut self.registers, false);
+                Flag::H.write(&mut self.registers, false);
+                Flag::C.write(&mut self.registers, true);
             }
             Opcode::CPL => {
-                let a = Reg8::A.read(self);
-                Reg8::A.write(self, !a);
-                Flag::N.write(self, true);
-                Flag::H.write(self, true);
-                Ok(())
+                let a = Reg8::A.read(&self.registers);
+                Reg8::A.write(&mut self.registers, !a);
+                Flag::N.write(&mut self.registers, true);
+                Flag::H.write(&mut self.registers, true);
             }
             Opcode::CCF => {
-                Flag::N.write(self, false);
-                Flag::H.write(self, false);
-                Flag::C.write(self, !Flag::C.read(self));
-                Ok(())
+                Flag::N.write(&mut self.registers, false);
+                Flag::H.write(&mut self.registers, false);
+                let c = Flag::C.read(&self.registers);
+                Flag::C.write(&mut self.registers, !c);
             }
-            Opcode::ADD(dst, src) => self.add(dst, src),
-            Opcode::ADDHLMem(dst, src) => self.add(dst, src),
-            Opcode::ADDImm(dst, src) => self.add(dst, src),
-            Opcode::ADC(dst, src) => self.add_carry(dst, src),
-            Opcode::ADCHLMem(dst, src) => self.add_carry(dst, src),
-            Opcode::ADCImm(dst, src) => self.add_carry(dst, src),
-            Opcode::SUB(dst, src) => self.sub(dst, src),
-            Opcode::SUBHLMem(dst, src) => self.sub(dst, src),
-            Opcode::SUBImm(dst, src) => self.sub(dst, src),
-            Opcode::SBC(dst, src) => self.sub_carry(dst, src),
-            Opcode::SBCHLMem(dst, src) => self.sub_carry(dst, src),
-            Opcode::SBCImm(dst, src) => self.sub_carry(dst, src),
-            Opcode::AND(dst, src) => self.and(dst, src),
-            Opcode::ANDHLMem(dst, src) => self.and(dst, src),
-            Opcode::ANDImm(dst, src) => self.and(dst, src),
-            Opcode::XOR(dst, src) => self.xor(dst, src),
-            Opcode::XORHLMem(dst, src) => self.xor(dst, src),
-            Opcode::XORImm(dst, src) => self.xor(dst, src),
-            Opcode::OR(dst, src) => self.or(dst, src),
-            Opcode::ORHLMem(dst, src) => self.or(dst, src),
-            Opcode::ORImm(dst, src) => self.or(dst, src),
-            Opcode::CP(dst, src) => self.compare(dst, src),
-            Opcode::CPHLMem(dst, src) => self.compare(dst, src),
-            Opcode::CPImm(dst, src) => self.compare(dst, src),
+            Opcode::ADD(dst, src) => self.add(dst, src.read(&self.registers)),
+            Opcode::ADDHLMem(dst, src) => self.add(dst, src.read(memory, &self.registers)),
+            Opcode::ADDImm(dst, src) => self.add(dst, src.read(memory, &self.registers)),
+            Opcode::ADC(dst, src) => self.add_carry(dst, src.read(&self.registers)),
+            Opcode::ADCHLMem(dst, src) => self.add_carry(dst, src.read(memory, &self.registers)),
+            Opcode::ADCImm(dst, src) => self.add_carry(dst, src.read(memory, &self.registers)),
+            Opcode::SUB(dst, src) => self.sub(dst, src.read(&self.registers)),
+            Opcode::SUBHLMem(dst, src) => self.sub(dst, src.read(memory, &self.registers)),
+            Opcode::SUBImm(dst, src) => self.sub(dst, src.read(memory, &self.registers)),
+            Opcode::SBC(dst, src) => self.sub_carry(dst, src.read(&self.registers)),
+            Opcode::SBCHLMem(dst, src) => self.sub_carry(dst, src.read(memory, &self.registers)),
+            Opcode::SBCImm(dst, src) => self.sub_carry(dst, src.read(memory, &self.registers)),
+            Opcode::AND(dst, src) => self.and(dst, src.read(&self.registers)),
+            Opcode::ANDHLMem(dst, src) => self.and(dst, src.read(memory, &self.registers)),
+            Opcode::ANDImm(dst, src) => self.and(dst, src.read(memory, &self.registers)),
+            Opcode::XOR(dst, src) => self.xor(dst, src.read(&self.registers)),
+            Opcode::XORHLMem(dst, src) => self.xor(dst, src.read(memory, &self.registers)),
+            Opcode::XORImm(dst, src) => self.xor(dst, src.read(memory, &self.registers)),
+            Opcode::OR(dst, src) => self.or(dst, src.read(&self.registers)),
+            Opcode::ORHLMem(dst, src) => self.or(dst, src.read(memory, &self.registers)),
+            Opcode::ORImm(dst, src) => self.or(dst, src.read(memory, &self.registers)),
+            Opcode::CP(dst, src) => self.compare(dst, src.read(&self.registers)),
+            Opcode::CPHLMem(dst, src) => self.compare(dst, src.read(memory, &self.registers)),
+            Opcode::CPImm(dst, src) => self.compare(dst, src.read(memory, &self.registers)),
 
-            Opcode::RLCA => self.rlca(),
-            Opcode::RLA => self.rla(),
-            Opcode::RRCA => self.rrca(),
-            Opcode::RRA => self.rra(),
+            Opcode::RLCA => self.rlca(memory),
+            Opcode::RLA => self.rla(memory),
+            Opcode::RRCA => self.rrca(memory),
+            Opcode::RRA => self.rra(memory),
 
             Opcode::Illegal => panic!("Illegal opcode"),
 
-            Opcode::RLC(r) => self.rlc(r),
-            Opcode::RLCMem(r) => self.rlc(r),
-            Opcode::RRC(r) => self.rrc(r),
-            Opcode::RRCMem(r) => self.rrc(r),
-            Opcode::RL(r) => self.rl(r),
-            Opcode::RLMem(r) => self.rl(r),
-            Opcode::RR(r) => self.rr(r),
-            Opcode::RRMem(r) => self.rr(r),
-            Opcode::SLA(r) => self.sla(r),
-            Opcode::SLAMem(r) => self.sla(r),
-            Opcode::SRA(r) => self.sra(r),
-            Opcode::SRAMem(r) => self.sra(r),
-            Opcode::SWAP(r) => self.swap(r),
-            Opcode::SWAPMem(r) => self.swap(r),
-            Opcode::SRL(r) => self.srl(r),
-            Opcode::SRLMem(r) => self.srl(r),
-            Opcode::BIT(b, r) => self.bit(b, r),
-            Opcode::BITMem(b, r) => self.bit(b, r),
-            Opcode::RES(b, r) => self.res(b, r),
-            Opcode::RESMem(b, r) => self.res(b, r),
-            Opcode::SET(b, r) => self.set(b, r),
-            Opcode::SETMem(b, r) => self.set(b, r),
-        }
-        .map(|_| (maybe_pc, actual_cycles))
-        .map_err(|e| RuntimeError(RuntimeErrorKind::ReadWriteError(e)))
+            Opcode::RLC(r) => self.rlc(Either::Left(r), memory),
+            Opcode::RLCMem(r) => self.rlc(Either::Right(r), memory),
+            Opcode::RRC(r) => self.rrc(Either::Left(r), memory),
+            Opcode::RRCMem(r) => self.rrc(Either::Right(r), memory),
+            Opcode::RL(r) => self.rl(Either::Left(r), memory),
+            Opcode::RLMem(r) => self.rl(Either::Right(r), memory),
+            Opcode::RR(r) => self.rr(Either::Left(r), memory),
+            Opcode::RRMem(r) => self.rr(Either::Right(r), memory),
+            Opcode::SLA(r) => self.sla(Either::Left(r), memory),
+            Opcode::SLAMem(r) => self.sla(Either::Right(r), memory),
+            Opcode::SRA(r) => self.sra(Either::Left(r), memory),
+            Opcode::SRAMem(r) => self.sra(Either::Right(r), memory),
+            Opcode::SWAP(r) => self.swap(Either::Left(r), memory),
+            Opcode::SWAPMem(r) => self.swap(Either::Right(r), memory),
+            Opcode::SRL(r) => self.srl(Either::Left(r), memory),
+            Opcode::SRLMem(r) => self.srl(Either::Right(r), memory),
+            Opcode::BIT(b, r) => self.bit(b, Either::Left(r), memory),
+            Opcode::BITMem(b, r) => self.bit(b, Either::Right(r), memory),
+            Opcode::RES(b, r) => self.res(b, Either::Left(r), memory),
+            Opcode::RESMem(b, r) => self.res(b, Either::Right(r), memory),
+            Opcode::SET(b, r) => self.set(b, Either::Left(r), memory),
+            Opcode::SETMem(b, r) => self.set(b, Either::Right(r), memory),
+        };
+        (maybe_pc, actual_cycles)
     }
 
     /// Returns an iterator over the instructions, without
     /// executing them or modifying memory nor registers.
-    pub fn preview_iterator(&self, start: u16) -> CPUPreviewIterator {
+    pub fn preview_iterator<'a>(
+        &'a self,
+        start: u16,
+        memory: &'a Interconnect,
+    ) -> CPUPreviewIterator {
         CPUPreviewIterator {
             cpu: self,
+            memory,
             pc: start,
         }
     }
@@ -1016,6 +910,7 @@ impl CPU {
 /// without having to make the CPU jump to them.
 pub struct CPUPreviewIterator<'a> {
     cpu: &'a CPU,
+    memory: &'a Interconnect,
     pc: u16,
 }
 
@@ -1023,7 +918,8 @@ impl<'a> Iterator for CPUPreviewIterator<'a> {
     type Item = Opcode;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let opcode: Option<Opcode> = Decoder::decode_with_context(&self.cpu, self.pc);
+        let opcode: Option<Opcode> =
+            Decoder::decode_with_context(&self.cpu.registers, self.memory, self.pc);
 
         if let Some(o) = opcode {
             let size = o.size();
@@ -1034,18 +930,5 @@ impl<'a> Iterator for CPUPreviewIterator<'a> {
         } else {
             None
         }
-    }
-}
-
-impl Iterator for CPU {
-    type Item = Opcode;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let opcode: Opcode = Decoder::decode(self);
-        let size = opcode.size();
-
-        Reg16::PC.add(self, size as u16);
-
-        Some(opcode)
     }
 }

@@ -4,14 +4,13 @@ use crate::{
     debug::{util::FromHexString, widget::Widget},
     gpu::OAM_START,
     gpu::VRAM_START,
-    memory_map::Mem,
+    memory_map::Interconnect,
     memory_map::ECHO_START,
     memory_map::ERAM_START,
     memory_map::HRAM_START,
     memory_map::IO_START,
     memory_map::ROM_START,
     memory_map::WRAM_START,
-    Dst, Src,
 };
 use crossterm::event::{KeyCode, KeyEvent};
 use std::{borrow::Cow, io::Stdout};
@@ -42,8 +41,8 @@ pub struct MemoryView<'a> {
 }
 
 impl<'a> Widget for MemoryView<'a> {
-    fn refresh(&mut self, cpu: &CPU) {
-        let location = cpu.memory_map.location(self.pos);
+    fn refresh(&mut self, _: &CPU, memory: &Interconnect) {
+        let location = memory.location(self.pos);
         let top = (0u8..0x10)
             .map(|i| format!(" {:02x}", i))
             .collect::<String>();
@@ -63,11 +62,13 @@ impl<'a> Widget for MemoryView<'a> {
                             .map(|a| {
                                 let addr = addr.saturating_add(a);
                                 let end = if a == 0xF { "\n" } else { "" };
-                                let data = if let Ok(data) = Mem(addr).try_read(cpu) {
+
+                                let data = if let Ok(data) = memory.try_read(addr) {
                                     format!("{:02x}", data)
                                 } else {
                                     String::from("??")
                                 };
+
                                 if addr == self.pos {
                                     Text::Styled(
                                         Cow::Owned(format!(" {}{}", data, end)),
@@ -97,11 +98,17 @@ impl<'a> Widget for MemoryView<'a> {
         self.text = text;
     }
 
-    fn draw(&mut self, f: &mut Frame<CrosstermBackend<Stdout>>, chunk: Rect, cpu: &CPU) {
+    fn draw(
+        &mut self,
+        f: &mut Frame<CrosstermBackend<Stdout>>,
+        chunk: Rect,
+        cpu: &CPU,
+        memory: &Interconnect,
+    ) {
         self.height = chunk.height as usize;
         if !self.init {
             self.init = true;
-            self.refresh(cpu);
+            self.refresh(cpu, memory);
         }
 
         let paragraph = Paragraph::new(self.text.iter())
@@ -130,7 +137,12 @@ impl<'a> Widget for MemoryView<'a> {
         self.selected
     }
 
-    fn handle_key(&mut self, key: KeyEvent, _: &mut CPU) -> Option<(WidgetKind, String)> {
+    fn handle_key(
+        &mut self,
+        key: KeyEvent,
+        _: &mut CPU,
+        _: &Interconnect,
+    ) -> Option<(WidgetKind, String)> {
         match key.code {
             KeyCode::Char('g') => {
                 self.command = Some(Command::Goto);
@@ -179,7 +191,12 @@ impl<'a> Widget for MemoryView<'a> {
         }
     }
 
-    fn process_input(&mut self, input: String, cpu: &mut CPU) -> Result<(), Option<String>> {
+    fn process_input(
+        &mut self,
+        input: String,
+        _: &mut CPU,
+        memory: &mut Interconnect,
+    ) -> Result<(), Option<String>> {
         match &self.command {
             Some(c) => match c {
                 Command::Goto => match input.to_lowercase().as_str() {
@@ -224,9 +241,10 @@ impl<'a> Widget for MemoryView<'a> {
                     },
                 },
                 Command::Set => match u8::from_hex_string(input) {
-                    Ok(value) => Mem(self.pos)
-                        .try_write(cpu, value)
-                        .map_err(|e| Some(format!("{}", e))),
+                    Ok(value) => {
+                        memory.write(self.pos, value);
+                        Ok(())
+                    }
                     Err(_) => Err(None),
                 },
             },
