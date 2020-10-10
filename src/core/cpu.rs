@@ -815,6 +815,20 @@ impl CPU {
         dst.try_write(self, value & mask)
     }
 
+    pub fn handle_io_read(&self, addr: u16) -> Option<u8> {
+        match addr {
+            _ => None,
+        }
+    }
+
+    pub fn handle_io_write(&mut self, addr: u16, value: u8) {
+        match addr {
+            // SVBK: Change WRAM bank
+            0xFF70 => self.memory_map.wram.set_bank((value & 0x3) as usize),
+            _ => {}
+        }
+    }
+
     /// Executes an instruction, and returns a potentially new
     /// address for the PC register. If the return value is `None`,
     /// then the new PC value is set to the next instruction, based

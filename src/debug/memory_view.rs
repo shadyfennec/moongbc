@@ -2,7 +2,15 @@ use super::widget::WidgetKind;
 use crate::{
     cpu::CPU,
     debug::{util::FromHexString, widget::Widget},
+    gpu::OAM_START,
+    gpu::VRAM_START,
     memory_map::Mem,
+    memory_map::ECHO_START,
+    memory_map::ERAM_START,
+    memory_map::HRAM_START,
+    memory_map::IO_START,
+    memory_map::ROM_START,
+    memory_map::WRAM_START,
     Dst, Src,
 };
 use crossterm::event::{KeyCode, KeyEvent};
@@ -132,7 +140,7 @@ impl<'a> Widget for MemoryView<'a> {
                 self.command = Some(Command::Set);
                 Some((
                     WidgetKind::Memory,
-                    format!("Set memory at $0x{:04x}", self.pos),
+                    format!("Set memory at x{:04x}", self.pos),
                 ))
             }
             KeyCode::Up => {
@@ -176,27 +184,35 @@ impl<'a> Widget for MemoryView<'a> {
             Some(c) => match c {
                 Command::Goto => match input.to_lowercase().as_str() {
                     "boot" | "rom" => {
-                        self.goto(0x0000);
+                        self.goto(ROM_START);
+                        Ok(())
+                    }
+                    "eram" | "external ram" => {
+                        self.goto(ERAM_START);
                         Ok(())
                     }
                     "vram" | "video ram" => {
-                        self.goto(0x8000);
+                        self.goto(VRAM_START);
                         Ok(())
                     }
                     "wram" | "work ram" | "ram" | "working ram" => {
-                        self.goto(0xC000);
+                        self.goto(WRAM_START);
+                        Ok(())
+                    }
+                    "echo" | "echo ram" => {
+                        self.goto(ECHO_START);
                         Ok(())
                     }
                     "oam" | "object attribute memory" | "object attributes memory" => {
-                        self.goto(0xFE00);
+                        self.goto(OAM_START);
                         Ok(())
                     }
                     "io" | "io registers" | "i/o registers" | "i/o" => {
-                        self.goto(0xFF00);
+                        self.goto(IO_START);
                         Ok(())
                     }
                     "hram" | "high ram" => {
-                        self.goto(0xFF80);
+                        self.goto(HRAM_START);
                         Ok(())
                     }
                     _ => match u16::from_hex_string(input) {

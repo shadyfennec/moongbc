@@ -1,4 +1,4 @@
-use crate::{cpu::CPU, ram::MemoryError};
+use crate::{cpu::CPU, memory_map::MemoryError};
 use std::fmt;
 
 /// Represents a byte, where each bit is accessible as a boolean value.
